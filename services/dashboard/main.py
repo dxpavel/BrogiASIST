@@ -29,7 +29,7 @@ def get_db_status() -> dict:
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
 
-        tables = ["email_messages", "rss_articles", "youtube_videos", "actions", "sessions", "sources", "config", "attachments"]
+        tables = ["email_messages", "rss_articles", "youtube_videos", "mantis_issues", "actions", "sessions", "config", "attachments"]
         counts = {}
         for t in tables:
             cur.execute(f"SELECT COUNT(*) FROM {t}")
@@ -70,6 +70,17 @@ def get_db_status() -> dict:
         ]
 
         cur.execute("""
+            SELECT project_name, issue_status, COUNT(*)
+            FROM mantis_issues
+            GROUP BY project_name, issue_status
+            ORDER BY project_name, COUNT(*) DESC
+        """)
+        mantis_stats = [
+            {"project": r[0], "status": r[1], "count": r[2]}
+            for r in cur.fetchall()
+        ]
+
+        cur.execute("""
             SELECT channel_title, COUNT(*), MAX(published_at)
             FROM youtube_videos
             GROUP BY channel_title
@@ -83,9 +94,10 @@ def get_db_status() -> dict:
 
         conn.close()
         return {"ok": True, "counts": counts, "recent_actions": recent_actions,
-                "email_stats": email_stats, "rss_stats": rss_stats, "yt_stats": yt_stats}
+                "email_stats": email_stats, "rss_stats": rss_stats, "yt_stats": yt_stats,
+                "mantis_stats": mantis_stats}
     except Exception as e:
-        return {"ok": False, "error": str(e), "counts": {}, "recent_actions": [], "email_stats": [], "rss_stats": [], "yt_stats": []}
+        return {"ok": False, "error": str(e), "counts": {}, "recent_actions": [], "email_stats": [], "rss_stats": [], "yt_stats": [], "mantis_stats": []}
 
 
 def get_chroma_status() -> dict:

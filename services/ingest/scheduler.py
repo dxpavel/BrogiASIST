@@ -18,6 +18,7 @@ from ingest_email_idle import start_all as start_idle_listeners
 from ingest_email import ACCOUNTS, fetch_messages, upsert_messages
 from ingest_rss import get_token as rss_token, fetch_items, upsert_articles
 from ingest_youtube import get_access_token, get_subscriptions, get_uploads_playlist, get_recent_videos, upsert_videos
+from ingest_mantis import fetch_issues as mantis_fetch, upsert_issues as mantis_upsert, PROJECT_IDS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +43,23 @@ def job_email_scan():
             log.error(f"  email scan {acc['name']}: {e}")
     if total:
         log.info(f"EMAIL scan (záloha): zachyceno +{total} nových")
+
+
+def job_mantis():
+    log.info("MANTIS ingest START")
+    since = datetime.now(tz=timezone.utc) - timedelta(days=DAYS_BACK)
+    total = 0
+    for pid in PROJECT_IDS:
+        try:
+            issues = mantis_fetch(pid, since)
+            new_c, _ = mantis_upsert(issues)
+            total += new_c
+        except Exception as e:
+            log.error(f"  MANTIS projekt {pid}: {e}")
+    if total:
+        log.info(f"MANTIS ingest DONE — nových/aktualizovaných: {total}")
+    else:
+        log.info("MANTIS ingest DONE — žádné změny")
 
 
 def job_rss():
@@ -86,6 +104,7 @@ if __name__ == "__main__":
     scheduler = BackgroundScheduler(timezone="Europe/Prague")
     scheduler.add_job(job_email_scan, "interval", minutes=30, id="email_scan", next_run_time=datetime.now())
     scheduler.add_job(job_rss,        "interval", minutes=30, id="rss",        next_run_time=datetime.now())
+    scheduler.add_job(job_mantis,     "interval", minutes=30, id="mantis",     next_run_time=datetime.now())
     scheduler.add_job(job_youtube,    "interval", hours=2,    id="youtube",    next_run_time=datetime.now())
     scheduler.start()
 

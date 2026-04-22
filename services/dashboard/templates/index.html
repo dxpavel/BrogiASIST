@@ -134,6 +134,25 @@
     {% endif %}
   </div>
 
+  <!-- MantisBT -->
+  <div class="card card-full" style="grid-column: span 2;">
+    <h2>MantisBT — issues per projekt</h2>
+    {% if db.ok and db.mantis_stats %}
+    <table>
+      <tr><th>Projekt</th><th>Status</th><th>Počet</th></tr>
+      {% for row in db.mantis_stats %}
+      <tr>
+        <td class="name">{{ row.project or '—' }}</td>
+        <td>{{ row.status }}</td>
+        <td class="num">{{ row.count }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="empty">Žádná data</div>
+    {% endif %}
+  </div>
+
   <!-- Poslední akce -->
   <div class="card card-full">
     <h2>Poslední akce</h2>

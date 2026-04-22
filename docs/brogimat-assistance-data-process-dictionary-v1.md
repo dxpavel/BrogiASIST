@@ -158,11 +158,17 @@ Credentials se neukládají plain text — viz `brogimat-assistance-credentials-
 
 ---
 
-## Otevřené otázky (k rozhodnutí před implementací)
+## Rozhodnutí a stav implementace
 
-- [ ] Migration tool: raw SQL v repu, nebo Alembic / Flyway / Prisma?
-- [ ] Ingest engine: n8n scheduled WFL, Python worker, nebo Claude Code on-demand?
-- [ ] Embeddings model pro ChromaDB
-- [ ] Přesná cesta / naming konvence pro přílohy
-- [ ] iCloud app-specific password (pro Email modul)
-- [ ] iMessage plugin aktivace
+| Téma | Rozhodnutí | Status |
+|---|---|---|
+| Migration tool | Raw SQL — číslované soubory v `sql/` | ✅ 2026-04-22 |
+| Docker stack | PostgreSQL 16 + ChromaDB (docker-compose.yml) | ✅ 2026-04-22 |
+| PG port DEV | 5433 (5432 obsazen lokálním PG) | ✅ |
+| DB schéma | 001_init.sql + 002_email.sql | ✅ 2026-04-22 |
+| ChromaDB API | v2 (`/api/v2/`) | ✅ |
+| iCloud IMAP | App-specific password — dxpavel / oqjf-qiul-pmiw-eoib | ✅ |
+| Ingest engine | TBD — Python worker (nejpravděpodobnější) | ⏳ |
+| Embeddings model | TBD při implementaci ChromaDB kolekcí | ⏳ |
+| Přílohy — cesta | TBD — konfigurováno přes `config` tabulku | ⏳ |
+| iMessage | PROD only — webhook Mac Studio | ⏳ |
