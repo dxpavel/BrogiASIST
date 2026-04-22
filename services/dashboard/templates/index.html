@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BrogiASIST — Dashboard</title>
+<meta http-equiv="refresh" content="30">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'SF Mono', 'Fira Code', monospace; background: #0d1117; color: #c9d1d9; font-size: 11px; padding: 12px; }
+  h1 { color: #58a6ff; font-size: 14px; display: inline; }
+  .meta { display: inline; color: #6e7681; font-size: 10px; margin-left: 12px; }
+  .header { margin-bottom: 10px; }
+
+  /* Hlavní grid: pevné sloupce */
+  .grid-main { display: grid; grid-template-columns: 180px 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; }
+  .card h2 { font-size: 9px; color: #6e7681; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; border-bottom: 1px solid #21262d; padding-bottom: 4px; }
+
+  /* Badges */
+  .badge { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 700; }
+  .ok      { background: #1a4a1a; color: #3fb950; }
+  .fail    { background: #4a1a1a; color: #f85149; }
+  .pending { background: #2a2a1a; color: #e3b341; }
+
+  /* Tabulky */
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 2px 5px; text-align: left; border-bottom: 1px solid #1c2128; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 0; }
+  th { color: #6e7681; font-size: 9px; font-weight: 400; }
+  td.num { text-align: right; color: #58a6ff; width: 36px; max-width: 36px; }
+  td.name { width: 99%; }
+
+  /* Systém — status řádky */
+  .svc-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; border-bottom: 1px solid #1c2128; }
+  .svc-row:last-child { border-bottom: none; }
+
+  /* Counts */
+  .counts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 10px; padding-top: 8px; border-top: 1px solid #21262d; }
+  .count-item { text-align: center; }
+  .count-num   { font-size: 18px; font-weight: 700; color: #58a6ff; line-height: 1; }
+  .count-label { font-size: 8px; color: #6e7681; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* Akce — full width */
+  .card-full { grid-column: 1 / -1; }
+  .empty { color: #6e7681; font-style: italic; font-size: 10px; padding: 4px 0; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>BrogiASIST</h1>
+  <span class="meta">{{ now }} · auto-refresh 30s</span>
+</div>
+
+<div class="grid-main">
+
+  <!-- Systém + Záznamy -->
+  <div class="card">
+    <h2>Systém &amp; DB</h2>
+    <div class="svc-row">
+      <span>PostgreSQL</span>
+      <span class="badge {{ 'ok' if db.ok else 'fail' }}">{{ 'OK' if db.ok else 'ERR' }}</span>
+    </div>
+    <div class="svc-row">
+      <span>ChromaDB</span>
+      <span class="badge {{ 'ok' if chroma.ok else 'fail' }}">{{ 'OK' if chroma.ok else 'ERR' }}</span>
+    </div>
+    {% if not db.ok %}
+    <div style="color:#f85149;font-size:9px;margin-top:4px;">{{ db.error }}</div>
+    {% endif %}
+    {% if db.ok %}
+    <div class="counts">
+      {% for table, count in db.counts.items() %}
+      <div class="count-item">
+        <div class="count-num">{{ count }}</div>
+        <div class="count-label">{{ table.replace('_', ' ') }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Email mailboxy -->
+  <div class="card">
+    <h2>Email — mailboxy</h2>
+    {% if db.ok and db.email_stats %}
+    <table>
+      <tr><th class="name">Mailbox</th><th>Zpráv</th></tr>
+      {% for row in db.email_stats %}
+      <tr>
+        <td class="name">{{ row.mailbox }}</td>
+        <td class="num">{{ row.count }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="empty">Žádná data</div>
+    {% endif %}
+  </div>
+
+  <!-- RSS feedy -->
+  <div class="card">
+    <h2>RSS — feedy</h2>
+    {% if db.ok and db.rss_stats %}
+    <table>
+      <tr><th class="name">Feed</th><th>Art.</th></tr>
+      {% for row in db.rss_stats %}
+      <tr>
+        <td class="name">{{ row.feed or '—' }}</td>
+        <td class="num">{{ row.count }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="empty">Žádná data</div>
+    {% endif %}
+  </div>
+
+  <!-- YouTube -->
+  <div class="card">
+    <h2>YouTube — kanály (7 dní)</h2>
+    {% if db.ok and db.yt_stats %}
+    <table>
+      <tr><th class="name">Kanál</th><th>Vid.</th></tr>
+      {% for row in db.yt_stats %}
+      <tr>
+        <td class="name">{{ row.channel or '—' }}</td>
+        <td class="num">{{ row.count }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="empty">Žádná data</div>
+    {% endif %}
+  </div>
+
+  <!-- Poslední akce -->
+  <div class="card card-full">
+    <h2>Poslední akce</h2>
+    {% if db.ok and db.recent_actions %}
+    <table>
+      <tr><th>Zdroj</th><th>Typ akce</th><th>Status</th><th>Kdy</th></tr>
+      {% for a in db.recent_actions %}
+      <tr>
+        <td>{{ a.source_type }}</td>
+        <td>{{ a.action_type }}</td>
+        <td><span class="badge {{ 'ok' if a.status == 'executed' else ('fail' if a.status == 'failed' else 'pending') }}">{{ a.status }}</span></td>
+        <td>{{ a.created_at.strftime('%Y-%m-%d %H:%M') if a.created_at else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="empty">Žádné akce zatím</div>
+    {% endif %}
+  </div>
+
+</div>
+</body>
+</html>
