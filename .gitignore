@@ -1,0 +1,15 @@
+storage/
+logs/
+tmp/
+backup/
+.env
+*.log
+__pycache__/
+.DS_Store
+node_modules/
+
+# Credentials — nikdy do gitu
+docs/brogimat-assistance-credentials-v1.md
+
+# Grafika — velké binární soubory, jsou na SynologyDrive
+BrogiASIST_grafika/
