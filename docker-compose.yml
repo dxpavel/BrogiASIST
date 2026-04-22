@@ -28,11 +28,38 @@ services:
       - chroma_data:/chroma/chroma
     ports:
       - "8000:8000"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/v1/heartbeat || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+
+  dashboard:
+    build: ./services/dashboard
+    container_name: brogi_dashboard
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: 8000
+    ports:
+      - "9000:9000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+
+  scheduler:
+    build: ./services/ingest
+    container_name: brogi_scheduler
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   postgres_data:
