@@ -24,14 +24,15 @@ UNIVERSAL_BUTTONS = [
     [
         {"text": "📋 OF",        "callback_data": "email:of:{id}"},
         {"text": "⏰ REM",        "callback_data": "email:rem:{id}"},
-        {"text": "📝 NOTE",       "callback_data": "email:note:{id}"},
+        {"text": "📅 CAL",        "callback_data": "email:cal:{id}"},
     ],
     [
+        {"text": "📝 NOTE",       "callback_data": "email:note:{id}"},
         {"text": "✅ Hotovo",    "callback_data": "email:hotovo:{id}"},
         {"text": "👁️ Přečteno", "callback_data": "email:precteno:{id}"},
-        {"text": "⏳ Čeká",      "callback_data": "email:ceka:{id}"},
     ],
     [
+        {"text": "⏳ Čeká",      "callback_data": "email:ceka:{id}"},
         {"text": "🗑️ Spam",     "callback_data": "email:spam:{id}"},
         {"text": "⏭️ Skip",     "callback_data": "email:skip:{id}"},
     ],

@@ -2,6 +2,7 @@
 BrogiASIST — Email klasifikace přes Llama3.2 + pravidla
 """
 import os
+import re
 import json
 import logging
 import httpx
@@ -36,7 +37,7 @@ Obsah (prvních 400 znaků): {body}
 Vrať JSON:
 {{
   "firma": "<DXPSOLUTIONS|MBANK|ZAMECNICTVI|PRIVATE>",
-  "typ": "<SPAM|NABÍDKA|ÚKOL|INFO|FAKTURA|POTVRZENÍ|NEWSLETTER|NOTIFIKACE>",
+  "typ": "<SPAM|NABÍDKA|ÚKOL|INFO|FAKTURA|POTVRZENÍ|NEWSLETTER|NOTIFIKACE|POZVÁNKA>",
   "task_status": "<ČEKÁ-NA-MĚ|ČEKÁ-NA-ODPOVĚĎ|null>",
   "is_spam": <true|false>,
   "confidence": <0.0-1.0>,
@@ -105,7 +106,13 @@ def classify_new_emails(limit: int = 20):
             if not firma:
                 firma = "PRIVATE"
 
-            # 2. Spam pravidla (bez AI)
+            # 2a. Deterministická klasifikace pozvánky z kalendáře
+            if subject and re.match(r'^invitation:', subject.strip(), re.IGNORECASE):
+                _save_classification(email_id, firma, "POZVÁNKA", None, False, 1.0)
+                log.info(f"POZVÁNKA (pravidlo): {subject[:60]}")
+                continue
+
+            # 2b. Spam pravidla (bez AI)
             rule = _check_rules(from_addr or "")
             if rule and rule["is_spam"]:
                 _save_classification(email_id, firma, "SPAM", None, True, 1.0)

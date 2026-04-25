@@ -31,6 +31,7 @@ TYP_FOLDER = {
     "NABÍDKA":    "NABIDKA",
     "ÚKOL":       "TODO",
     "INFO":       "INFO",
+    "POZVÁNKA":   "POZVANKA",
 }
 
 

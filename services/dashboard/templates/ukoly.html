@@ -32,6 +32,7 @@
 .typ-NEWSLETTER{ color: var(--text-dim); }
 .typ-INFO      { color: var(--text-muted); }
 .typ-POTVRZENÍ { color: var(--accent); }
+.typ-POZVÁNKA  { color: #a78bfa; font-weight: 700; }
 .dot-notified  { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--accent); }
 .dot-pending   { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--yellow); animation:blink 1.2s infinite; }
 {% endblock %}
@@ -58,6 +59,7 @@
     <div class="act-btns">
       <button class="act-btn blue"   onclick="doAction('{{ e.id }}','of')">📋 OF</button>
       <button class="act-btn yellow" onclick="doAction('{{ e.id }}','rem')">⏰ REM</button>
+      <button class="act-btn blue"   onclick="doAction('{{ e.id }}','cal')">📅 CAL</button>
       <button class="act-btn"        onclick="doAction('{{ e.id }}','note')">📝 NOTE</button>
       <button class="act-btn green"  onclick="doAction('{{ e.id }}','hotovo')">✅ Hotovo</button>
       <button class="act-btn yellow" onclick="doAction('{{ e.id }}','ceka')">⏳ Čeká</button>

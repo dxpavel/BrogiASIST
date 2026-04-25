@@ -102,7 +102,72 @@ TYP_FOLDER = {
     "NOTIFIKACE": "NOTIFIKACE",
     "NEWSLETTER": "NEWSLETTER",
     "ESHOP":      "ESHOP",
+    "POZVÁNKA":   "POZVANKA",
 }
+
+# Mapování odesílatele → název Apple Calendar
+_CAL_FROM_MAP = {
+    "hrkel.ivan.hrkel@gmail.com": "PAJA",
+    "mbank":                       "MBANK",   # substring match
+}
+
+
+def _calendar_for_email(from_addr: str) -> str:
+    addr = (from_addr or "").lower()
+    for key, cal in _CAL_FROM_MAP.items():
+        if key in addr:
+            return cal
+    return "PAJA"
+
+
+# České zkratky měsíců pro parsování předmětu pozvánky
+_CZ_MONTHS = {
+    "led": 1, "úno": 2, "bře": 3, "dub": 4, "kvě": 5, "čvn": 6,
+    "čvc": 7, "srp": 8, "zář": 9, "říj": 10, "lis": 11, "pro": 12,
+}
+
+
+def _parse_invitation_subject(subject: str):
+    """
+    Parsuje předmět Google Calendar pozvánky.
+    Formát: 'Invitation: NÁZEV @ [DEN] DD. MON YYYY [HH:MM] [- HH:MM] ...'
+    Vrací (evt_name, start_iso_or_None, end_iso_or_None, all_day).
+    """
+    import re
+    from datetime import datetime as dt, date as date_t
+
+    # Název události (před @)
+    name_m = re.match(r"(?:invitation|pozvánka):\s*(.+?)\s*@", subject, re.IGNORECASE)
+    evt_name = name_m.group(1).strip() if name_m else subject
+
+    # Datum + čas — hledej první výskyt 'DD. MON YYYY'
+    pat = r"(\d{1,2})\.\s*(\w+)\s+(\d{4})(?:\s+(\d{1,2}):(\d{2}))?"
+    m = re.search(pat, subject)
+    if not m:
+        return evt_name, None, None, True
+
+    day = int(m.group(1))
+    mon_str = m.group(2).lower()
+    year = int(m.group(3))
+    h_start = m.group(4)
+    min_start = m.group(5)
+
+    month = _CZ_MONTHS.get(mon_str)
+    if not month:
+        return evt_name, None, None, True
+
+    if h_start:
+        start = dt(year, month, day, int(h_start), int(min_start))
+        # Hledej konecový čas '- HH:MM' po první hodině
+        end_m = re.search(r"-\s*(\d{1,2}):(\d{2})", subject[m.end():m.end()+30])
+        if end_m:
+            end = dt(year, month, day, int(end_m.group(1)), int(end_m.group(2)))
+        else:
+            from datetime import timedelta
+            end = start + timedelta(hours=1)
+        return evt_name, start.isoformat(), end.isoformat(), False
+    else:
+        return evt_name, date_t(year, month, day).isoformat(), None, True
 
 
 def _folder_for_email(email_id: str) -> str:
@@ -200,6 +265,30 @@ def _email_action(email_id: str, action: str):
         cur.execute("UPDATE email_messages SET human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
         conn.commit(); cur.close(); conn.close()
         imap_op = ("brogi", "HOTOVO")
+    elif action == "cal":
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT subject, from_address, body_text FROM email_messages WHERE id=%s", (email_id,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            return
+        subject, from_addr, body = row
+        cal_name = _calendar_for_email(from_addr)
+        evt_name, start_iso, end_iso, all_day = _parse_invitation_subject(subject or "")
+        ok = _bridge_call("/calendar/add", {
+            "name": evt_name,
+            "notes": f"Od: {from_addr}\n\n{body or ''}"[:1000],
+            "calendar": cal_name,
+            "start_iso": start_iso,
+            "end_iso": end_iso,
+            "all_day": all_day,
+        }, "CAL", str(email_id))
+        if not ok:
+            return
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("UPDATE email_messages SET task_status='→CAL', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
+        conn.commit(); cur.close(); conn.close()
+        imap_op = ("brogi", "HOTOVO")
     elif action == "unsub":
         conn = get_conn(); cur = conn.cursor()
         cur.execute("SELECT from_address FROM email_messages WHERE id=%s", (email_id,))
@@ -275,6 +364,7 @@ ACTION_LABEL = {
     "of":       "📋 Přidáno do OmniFocus",
     "rem":      "⏰ Přidáno do Reminders",
     "note":     "📝 Uloženo do Notes",
+    "cal":      "📅 Přidáno do kalendáře",
     "unsub":    "🚫 Odhlášen odesílatel",
     "skip":     "⏭️ Přeskočeno",
 }

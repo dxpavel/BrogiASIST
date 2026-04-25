@@ -424,6 +424,73 @@ def calendar_events(days: int = 60):
         return {"ok": False, "error": str(e), "events": []}
 
 
+@app.post("/calendar/add")
+def calendar_add(body: dict):
+    """Přidá událost do iCloud Calendar přes CalDAV. Hledá kalendář dle jména, fallback na první."""
+    import uuid
+    from icalendar import Calendar as ICal, Event as ICalEvent
+    from datetime import date as date_type
+
+    name      = body.get("name", "(bez názvu)")
+    notes     = body.get("notes", "")
+    cal_name  = body.get("calendar", "PAJA")
+    start_iso = body.get("start_iso")   # ISO datetime string nebo None
+    end_iso   = body.get("end_iso")
+    all_day   = body.get("all_day", False)
+
+    try:
+        # Parsuj datumy
+        if start_iso:
+            if "T" in str(start_iso):
+                start_dt = datetime.fromisoformat(str(start_iso).replace("Z", "+00:00"))
+                end_dt   = datetime.fromisoformat(str(end_iso).replace("Z", "+00:00")) if end_iso else start_dt + timedelta(hours=1)
+            else:
+                from datetime import date as date_type
+                start_dt = date_type.fromisoformat(str(start_iso))
+                end_dt   = date_type.fromisoformat(str(end_iso)) if end_iso else date_type(start_dt.year, start_dt.month, start_dt.day + 1)
+                all_day  = True
+        else:
+            start_dt = date.today()
+            end_dt   = date_type(start_dt.year, start_dt.month, start_dt.day)
+            all_day  = True
+
+        # Sestav iCal
+        cal = ICal()
+        cal.add("prodid", "-//BrogiASIST//EN")
+        cal.add("version", "2.0")
+        ev = ICalEvent()
+        ev.add("uid", str(uuid.uuid4()) + "@brogiasist")
+        ev.add("summary", name)
+        if notes:
+            ev.add("description", notes)
+        ev.add("dtstart", start_dt)
+        ev.add("dtend", end_dt)
+        ev.add("dtstamp", datetime.now(tz=timezone.utc))
+        cal.add_component(ev)
+        ical_bytes = cal.to_ical()
+
+        # Najdi cílový kalendář
+        client = caldav.DAVClient(url=CALDAV_URL, username=CALDAV_USER, password=CALDAV_PASS)
+        principal = client.principal()
+        calendars = principal.calendars()
+        target = None
+        for c in calendars:
+            if (c.get_display_name() or "") == cal_name:
+                target = c
+                break
+        if target is None and calendars:
+            target = calendars[0]
+        if target is None:
+            raise HTTPException(status_code=500, detail="Žádný kalendář nenalezen")
+
+        target.save_event(ical_bytes)
+        return {"ok": True, "calendar": cal_name, "name": name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=9100)
