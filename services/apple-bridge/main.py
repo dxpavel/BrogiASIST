@@ -116,16 +116,20 @@ JSON.stringify(result);
 @app.post("/reminders/add")
 def reminders_add(body: dict):
     """Přidá reminder do Apple Reminders (výchozí seznam)."""
-    name = body.get("name", "").replace('"', '\\"').replace('\n', ' ')
-    reminder_body = body.get("body", "").replace('"', '\\"')
-    list_name = body.get("list", "Reminders")
+    name         = body.get("name", "") or ""
+    reminder_body = body.get("body", "") or ""
+    list_name    = body.get("list", "Reminders")
+    # json.dumps zajistí správné escapování \n, \t, uvozovek, unicode
+    name_js      = json.dumps(name)
+    body_js      = json.dumps(reminder_body)
+    list_js      = json.dumps(list_name)
     script = f"""
 const rm = Application('Reminders');
-const lists = rm.lists.whose({{name: "{list_name}"}})();
+const lists = rm.lists.whose({{name: {list_js}}})();
 const lst = lists.length > 0 ? lists[0] : rm.lists[0];
-const r = rm.Reminder({{name: "{name}", body: "{reminder_body}"}});
+const r = rm.Reminder({{name: {name_js}, body: {body_js}}});
 lst.reminders.push(r);
-JSON.stringify({{ok: true, name: "{name}"}});
+JSON.stringify({{ok: true, name: {name_js}}});
 """
     try:
         result = run_jxa(script)
@@ -137,25 +141,27 @@ JSON.stringify({{ok: true, name: "{name}"}});
 @app.post("/notes/add")
 def notes_add(body: dict):
     """Přidá novou poznámku do Apple Notes."""
-    name = body.get("name", "").replace('"', '\\"').replace('\n', ' ')
-    note_body = body.get("body", "").replace('"', '\\"').replace('\n', '\\n')
-    folder_name = body.get("folder", "")
+    name        = body.get("name", "") or ""
+    note_body   = body.get("body", "") or ""
+    folder_name = body.get("folder", "") or ""
+    name_js     = json.dumps(name)
+    body_js     = json.dumps(note_body)
     if folder_name:
-        folder_name = folder_name.replace('"', '\\"')
+        folder_js = json.dumps(folder_name)
         script = f"""
 const notes = Application('Notes');
-const folders = notes.folders.whose({{name: "{folder_name}"}})();
+const folders = notes.folders.whose({{name: {folder_js}}})();
 const folder = folders.length > 0 ? folders[0] : notes.defaultAccount.folders[0];
-const n = notes.Note({{name: "{name}", body: "{note_body}"}});
+const n = notes.Note({{name: {name_js}, body: {body_js}}});
 folder.notes.push(n);
-JSON.stringify({{ok: true, name: "{name}"}});
+JSON.stringify({{ok: true, name: {name_js}}});
 """
     else:
         script = f"""
 const notes = Application('Notes');
-const n = notes.Note({{name: "{name}", body: "{note_body}"}});
+const n = notes.Note({{name: {name_js}, body: {body_js}}});
 notes.defaultAccount.notes.push(n);
-JSON.stringify({{ok: true, name: "{name}"}});
+JSON.stringify({{ok: true, name: {name_js}}});
 """
     try:
         result = run_jxa(script)
@@ -167,15 +173,17 @@ JSON.stringify({{ok: true, name: "{name}"}});
 @app.post("/omnifocus/add_task")
 def omnifocus_add_task(body: dict):
     """Přidá task do OmniFocus inboxu."""
-    name = body.get("name", "").replace('"', '\\"')
-    note = body.get("note", "").replace('"', '\\"')
+    name    = body.get("name", "") or ""
+    note    = body.get("note", "") or ""
     flagged = "true" if body.get("flagged", False) else "false"
+    name_js = json.dumps(name)
+    note_js = json.dumps(note)
     script = f"""
 const of2 = Application('OmniFocus');
 const doc = of2.defaultDocument;
-const task = of2.Task({{name: "{name}", note: "{note}", flagged: {flagged}}});
+const task = of2.Task({{name: {name_js}, note: {note_js}, flagged: {flagged}}});
 doc.inboxTasks.push(task);
-JSON.stringify({{ok: true, name: "{name}"}});
+JSON.stringify({{ok: true, name: {name_js}}});
 """
     try:
         result = run_jxa(script)
