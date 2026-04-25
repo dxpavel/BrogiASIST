@@ -1,0 +1,300 @@
+{% extends "base.html" %}
+{% block title %}Admin{% endblock %}
+{% block refresh %}3600{% endblock %}
+{% block nav_admin %}active{% endblock %}
+
+{% block extra_style %}
+.admin-grid { display: grid; grid-template-columns: 320px 1fr; gap: 12px; }
+
+/* add-topic form */
+.form-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px; }
+.form-card h2 { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .08em;
+                margin-bottom: 10px; border-bottom: 1px solid var(--border); padding-bottom: 4px; font-family: var(--font-mono); }
+.form-row { margin-bottom: 8px; }
+.form-row label { display: block; font-size: 9px; color: var(--text-muted); text-transform: uppercase;
+                  letter-spacing: .06em; margin-bottom: 3px; font-family: var(--font-mono); }
+.form-row input, .form-row select, .form-row textarea {
+  width: 100%; background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--text); padding: 5px 8px; border-radius: var(--radius-sm);
+  font-size: 11px; font-family: var(--font-mono); outline: none; transition: .12s;
+}
+.form-row input:focus, .form-row select:focus, .form-row textarea:focus { border-color: var(--accent-dark); }
+.form-row textarea { resize: vertical; min-height: 48px; }
+.prio-btns { display: flex; gap: 4px; }
+.prio-btn { flex: 1; padding: 4px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+            background: var(--surface-2); color: var(--text-muted); font-size: 10px; font-family: var(--font-mono);
+            cursor: pointer; text-align: center; transition: .12s; }
+.prio-btn.active.high   { background: rgba(248,81,73,.15); color: var(--red); border-color: var(--red); }
+.prio-btn.active.medium { background: rgba(227,179,65,.12); color: var(--yellow); border-color: var(--yellow); }
+.prio-btn.active.low    { background: var(--accent-dim); color: var(--accent); border-color: var(--accent-dark); }
+.btn-add { width: 100%; padding: 6px; border-radius: var(--radius-sm); border: none;
+           background: var(--accent-dim); color: var(--accent); font-family: var(--font-mono);
+           font-size: 11px; font-weight: 700; cursor: pointer; transition: .12s; margin-top: 4px; }
+.btn-add:hover { background: var(--accent); color: #fff; }
+
+/* topic cards */
+.topic-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
+  margin-bottom: 8px; overflow: hidden;
+}
+.topic-header { display: flex; align-items: center; gap: 8px; padding: 10px;
+                cursor: pointer; user-select: none; }
+.topic-header:hover { background: var(--surface-2); }
+.topic-name { font-size: 13px; font-weight: 700; flex: 1; }
+.topic-toggle { font-size: 10px; color: var(--text-dim); transition: transform .15s; }
+.topic-body { padding: 0 10px 10px; border-top: 1px solid var(--border); }
+.topic-body.collapsed { display: none; }
+.prio-badge { font-family: var(--font-mono); font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 3px; }
+.prio-badge.high   { background: rgba(248,81,73,.15); color: var(--red); }
+.prio-badge.medium { background: rgba(227,179,65,.12); color: var(--yellow); }
+.prio-badge.low    { background: var(--accent-dim); color: var(--accent); }
+.btn-del { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 12px; padding: 2px 4px; transition: .12s; }
+.btn-del:hover { color: var(--red); }
+
+/* signals */
+.signals { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.sig-group-label { font-family: var(--font-mono); font-size: 8px; color: var(--text-dim);
+                   text-transform: uppercase; letter-spacing: .06em; width: 100%; margin-top: 4px; }
+.sig-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 10px;
+            font-size: 10px; font-family: var(--font-mono); }
+.sig-chip.positive   { background: var(--accent-dim); color: var(--accent); }
+.sig-chip.negative   { background: rgba(248,81,73,.12); color: var(--red); }
+.sig-chip.brand      { background: rgba(88,166,255,.12); color: var(--blue); }
+.sig-chip.system     { background: rgba(240,136,62,.12); color: var(--orange); }
+.sig-chip.compatible { background: rgba(167,139,250,.12); color: #a78bfa; }
+.sig-x { cursor: pointer; opacity: .5; font-size: 9px; }
+.sig-x:hover { opacity: 1; }
+
+/* add signal inline */
+.add-signal { display: flex; gap: 4px; margin-top: 6px; }
+.add-signal select, .add-signal input {
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
+  padding: 3px 6px; border-radius: var(--radius-sm); font-size: 10px;
+  font-family: var(--font-mono); outline: none;
+}
+.add-signal select { width: 110px; flex-shrink: 0; }
+.add-signal input  { flex: 1; }
+.add-signal button { background: var(--accent-dim); border: none; color: var(--accent);
+                     padding: 3px 8px; border-radius: var(--radius-sm); cursor: pointer;
+                     font-family: var(--font-mono); font-size: 10px; font-weight: 700; transition: .12s; }
+.add-signal button:hover { background: var(--accent); color: #fff; }
+
+/* sub-topics */
+.subtopics { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.sub-label { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em;
+             font-family: var(--font-mono); margin-bottom: 6px; }
+.subtopic-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px;
+                background: var(--surface-2); border-radius: var(--radius-sm); margin-bottom: 4px; }
+.subtopic-name { font-size: 11px; font-weight: 600; min-width: 120px; }
+{% endblock %}
+
+{% block content %}
+<div class="admin-grid">
+
+  <!-- LEFT: Add topic form -->
+  <div>
+    <div class="form-card">
+      <h2>Přidat hlavní téma</h2>
+      <div class="form-row">
+        <label>Název tématu</label>
+        <input type="text" id="newTopicName" placeholder="např. FOTOGRAFOVÁNÍ">
+      </div>
+      <div class="form-row">
+        <label>Priorita</label>
+        <div class="prio-btns">
+          <div class="prio-btn high"   data-p="high"   onclick="setPrio(this)">VYSOKÁ</div>
+          <div class="prio-btn medium active" data-p="medium" onclick="setPrio(this)">STŘEDNÍ</div>
+          <div class="prio-btn low"    data-p="low"    onclick="setPrio(this)">NÍZKÁ</div>
+        </div>
+        <input type="hidden" id="newTopicPrio" value="medium">
+      </div>
+      <div class="form-row">
+        <label>Popis (nepovinný)</label>
+        <textarea id="newTopicDesc" placeholder="Krátký popis co téma zahrnuje..."></textarea>
+      </div>
+      <button class="btn-add" onclick="addTopic(null)">+ Přidat hlavní téma</button>
+    </div>
+
+    <div class="form-card" style="margin-top:10px">
+      <h2>Přidat podtéma</h2>
+      <div class="form-row">
+        <label>Patří pod</label>
+        <select id="newSubParent">
+          <option value="">— vyberte rodičovské téma —</option>
+          {% for t in topics %}
+          <option value="{{ t.id }}">{{ t.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Název podtématu</label>
+        <input type="text" id="newSubName" placeholder="např. Hardwarový ekosystém">
+      </div>
+      <div class="form-row">
+        <label>Priorita</label>
+        <div class="prio-btns">
+          <div class="prio-btn high"   data-ps="high"   onclick="setSubPrio(this)">VYSOKÁ</div>
+          <div class="prio-btn medium active" data-ps="medium" onclick="setSubPrio(this)">STŘEDNÍ</div>
+          <div class="prio-btn low"    data-ps="low"    onclick="setSubPrio(this)">NÍZKÁ</div>
+        </div>
+        <input type="hidden" id="newSubPrio" value="medium">
+      </div>
+      <button class="btn-add" onclick="addSubTopic()">+ Přidat podtéma</button>
+    </div>
+  </div>
+
+  <!-- RIGHT: Topic cards -->
+  <div id="topicList">
+    {% if not topics %}
+    <div class="card"><p class="empty">Žádná témata. Přidej první vlevo.</p></div>
+    {% endif %}
+    {% for t in topics %}
+    <div class="topic-card" id="tc-{{ t.id }}">
+      <div class="topic-header" onclick="toggleTopic(this)">
+        <span class="topic-name">{{ t.name }}</span>
+        <span class="prio-badge {{ t.priority }}">{{ {'high':'VYSOKÁ','medium':'STŘEDNÍ','low':'NÍZKÁ'}.get(t.priority, t.priority) }}</span>
+        <button class="btn-del" onclick="event.stopPropagation();delTopic({{ t.id }})" title="Smazat téma">✕</button>
+        <span class="topic-toggle">▾</span>
+      </div>
+      <div class="topic-body collapsed">
+        {% if t.description %}<div style="font-size:10px;color:var(--text-muted);margin-bottom:8px;padding-top:8px">{{ t.description }}</div>{% endif %}
+
+        <!-- signals -->
+        <div class="signals" id="sigs-{{ t.id }}" style="margin-top:8px">
+          {% for s in t.signals %}
+          <span class="sig-chip {{ s.type }}" id="sig-{{ s.id }}">
+            {{ {'positive':'✅','negative':'❌','brand':'®','system':'⚙','compatible':'🔗'}.get(s.type,'•') }}
+            {{ s.value }}
+            <span class="sig-x" onclick="delSignal({{ s.id }}, {{ t.id }})">✕</span>
+          </span>
+          {% endfor %}
+        </div>
+        <div class="add-signal">
+          <select id="st-{{ t.id }}">
+            <option value="positive">✅ pozitivní</option>
+            <option value="negative">❌ negativní</option>
+            <option value="brand">® značka</option>
+            <option value="system">⚙ systém</option>
+            <option value="compatible">🔗 kompatibilní</option>
+          </select>
+          <input type="text" id="sv-{{ t.id }}" placeholder="hodnota…" onkeydown="if(event.key==='Enter')addSignal({{ t.id }})">
+          <button onclick="addSignal({{ t.id }})">+</button>
+        </div>
+
+        <!-- sub-topics -->
+        {% if t.children %}
+        <div class="subtopics">
+          <div class="sub-label">Podtémata</div>
+          {% for c in t.children %}
+          <div class="subtopic-row" id="tc-{{ c.id }}">
+            <div style="flex:1">
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+                <span class="subtopic-name">{{ c.name }}</span>
+                <span class="prio-badge {{ c.priority }}">{{ {'high':'VYSOKÁ','medium':'STŘEDNÍ','low':'NÍZKÁ'}.get(c.priority, c.priority) }}</span>
+                <button class="btn-del" onclick="delTopic({{ c.id }})" title="Smazat">✕</button>
+              </div>
+              <div class="signals" id="sigs-{{ c.id }}">
+                {% for s in c.signals %}
+                <span class="sig-chip {{ s.type }}" id="sig-{{ s.id }}">
+                  {{ {'positive':'✅','negative':'❌','brand':'®','system':'⚙','compatible':'🔗'}.get(s.type,'•') }}
+                  {{ s.value }}
+                  <span class="sig-x" onclick="delSignal({{ s.id }}, {{ c.id }})">✕</span>
+                </span>
+                {% endfor %}
+              </div>
+              <div class="add-signal">
+                <select id="st-{{ c.id }}">
+                  <option value="positive">✅ pozitivní</option>
+                  <option value="negative">❌ negativní</option>
+                  <option value="brand">® značka</option>
+                  <option value="system">⚙ systém</option>
+                  <option value="compatible">🔗 kompatibilní</option>
+                </select>
+                <input type="text" id="sv-{{ c.id }}" placeholder="hodnota…" onkeydown="if(event.key==='Enter')addSignal({{ c.id }})">
+                <button onclick="addSignal({{ c.id }})">+</button>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SIG_ICONS = {positive:'✅',negative:'❌',brand:'®',system:'⚙',compatible:'🔗'};
+
+function toggleTopic(header) {
+  const body = header.nextElementSibling;
+  const icon = header.querySelector('.topic-toggle');
+  const collapsed = body.classList.toggle('collapsed');
+  icon.style.transform = collapsed ? 'rotate(-90deg)' : '';
+}
+
+function setPrio(el) {
+  document.querySelectorAll('.prio-btn[data-p]').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('newTopicPrio').value = el.dataset.p;
+}
+function setSubPrio(el) {
+  document.querySelectorAll('.prio-btn[data-ps]').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('newSubPrio').value = el.dataset.ps;
+}
+
+async function addTopic(parentId) {
+  const name = document.getElementById('newTopicName').value.trim();
+  const prio = document.getElementById('newTopicPrio').value;
+  const desc = document.getElementById('newTopicDesc').value.trim();
+  if (!name) return;
+  const r = await fetch('/api/topics', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name, priority: prio, description: desc || null, parent_id: parentId})});
+  if (r.ok) location.reload();
+}
+
+async function addSubTopic() {
+  const name = document.getElementById('newSubName').value.trim();
+  const prio = document.getElementById('newSubPrio').value;
+  const pid  = parseInt(document.getElementById('newSubParent').value);
+  if (!name || !pid) return;
+  const r = await fetch('/api/topics', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name, priority: prio, parent_id: pid})});
+  if (r.ok) location.reload();
+}
+
+async function delTopic(id) {
+  if (!confirm('Smazat téma a všechny jeho signály?')) return;
+  await fetch(`/api/topics/${id}`, {method:'DELETE'});
+  location.reload();
+}
+
+async function addSignal(topicId) {
+  const type  = document.getElementById(`st-${topicId}`).value;
+  const value = document.getElementById(`sv-${topicId}`).value.trim();
+  if (!value) return;
+  const r = await fetch(`/api/topics/${topicId}/signals`, {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({signal_type: type, value})});
+  if (r.ok) {
+    const d = await r.json();
+    const chip = document.createElement('span');
+    chip.className = `sig-chip ${type}`;
+    chip.id = `sig-${d.id}`;
+    chip.innerHTML = `${SIG_ICONS[type]||'•'} ${value} <span class="sig-x" onclick="delSignal(${d.id},${topicId})">✕</span>`;
+    document.getElementById(`sigs-${topicId}`).appendChild(chip);
+    document.getElementById(`sv-${topicId}`).value = '';
+  }
+}
+
+async function delSignal(sigId, topicId) {
+  await fetch(`/api/signals/${sigId}`, {method:'DELETE'});
+  const el = document.getElementById(`sig-${sigId}`);
+  if (el) el.remove();
+}
+</script>
+{% endblock %}

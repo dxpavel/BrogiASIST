@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Úkoly{% endblock %}
+{% block refresh %}30{% endblock %}
+{% block nav_ukoly %}active{% endblock %}
+
+{% block extra_style %}
+.action-row { display: grid; grid-template-columns: 80px 90px 1fr 100px 130px; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.action-row:last-child { border-bottom: none; }
+.action-row:hover { background: #1a2128; margin: 0 -10px; padding: 6px 10px; border-radius: 4px; }
+.payload-preview { font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.src-email   { color: var(--blue); }
+.src-mantis  { color: var(--orange); }
+.src-rss     { color: var(--primary-l); }
+.src-tg      { color: #a78bfa; }
+.act-pending  { background: #3a1a1a; color: var(--red); }
+.act-proposed { background: #2a2a1a; color: var(--yellow); }
+
+.email-row { display: grid; grid-template-columns: 70px 1fr auto; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
+.email-row:last-child { border-bottom: none; }
+.email-row:hover { background: var(--surface-2); margin: 0 -10px; padding: 6px 10px; border-radius: 4px; }
+.act-btn { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 3px; border: 1px solid var(--border2); background: var(--bg); color: var(--muted); cursor: pointer; white-space: nowrap; }
+.act-btn:hover { background: var(--surface-2); color: var(--text); }
+.act-btn.green { border-color:#2a5a2a; color:var(--accent); }
+.act-btn.red   { border-color:#5a2a2a; color:var(--red); }
+.act-btn.blue  { border-color:#1a3a5a; color:var(--blue); }
+.act-btn.yellow{ border-color:#5a4a1a; color:var(--yellow); }
+.act-btns { display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end; }
+.typ-ÚKOL      { color: var(--orange); font-weight: 700; }
+.typ-FAKTURA   { color: var(--yellow); font-weight: 700; }
+.typ-NABÍDKA   { color: var(--blue); }
+.typ-NOTIFIKACE{ color: var(--text-muted); }
+.typ-NEWSLETTER{ color: var(--text-dim); }
+.typ-INFO      { color: var(--text-muted); }
+.typ-POTVRZENÍ { color: var(--accent); }
+.dot-notified  { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--accent); }
+.dot-pending   { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--yellow); animation:blink 1.2s infinite; }
+{% endblock %}
+
+{% block content %}
+
+<!-- Emaily ke zpracování -->
+<div class="card" style="margin-bottom:12px">
+  <h2 style="margin-bottom:8px">📧 Emaily ke zpracování ({{ emails|length }})</h2>
+  {% if emails %}
+  <div style="display:grid; grid-template-columns: 70px 80px 55px 1fr 80px 90px; gap:8px; padding:4px 0 6px; border-bottom: 1px solid var(--border); font-size:9px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em">
+    <span>Typ</span><span>Mailbox</span><span>TG</span><span>Předmět</span><span>Firma</span><span>Přijato</span>
+  </div>
+  {% for e in emails %}
+  <div class="email-row">
+    <div>
+      <div><span class="mono typ-{{ e.typ }}" style="font-size:10px">{{ e.typ }}</span> <span style="font-size:9px;color:var(--muted)">{{ e.mailbox }}</span></div>
+      <div style="font-size:9px;color:var(--muted)">{% if e.sent_at %}{{ e.sent_at.strftime('%d.%m %H:%M') }}{% endif %}</div>
+    </div>
+    <div style="overflow:hidden;min-width:0">
+      <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500">{{ e.subject }}</div>
+      <div style="font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.from_address }}</div>
+    </div>
+    <div class="act-btns">
+      <button class="act-btn blue"   onclick="doAction('{{ e.id }}','of')">📋 OF</button>
+      <button class="act-btn yellow" onclick="doAction('{{ e.id }}','rem')">⏰ REM</button>
+      <button class="act-btn"        onclick="doAction('{{ e.id }}','note')">📝 NOTE</button>
+      <button class="act-btn green"  onclick="doAction('{{ e.id }}','hotovo')">✅ Hotovo</button>
+      <button class="act-btn yellow" onclick="doAction('{{ e.id }}','ceka')">⏳ Čeká</button>
+      <button class="act-btn green"  onclick="doAction('{{ e.id }}','precteno')">👁 Přečteno</button>
+      <button class="act-btn red"    onclick="doAction('{{ e.id }}','unsub')">🚫 Odhlásit</button>
+      <button class="act-btn red"    onclick="doAction('{{ e.id }}','spam')">🗑 Spam</button>
+      <button class="act-btn"        onclick="doAction('{{ e.id }}','skip')">⏭ Skip</button>
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p class="empty" style="padding:12px 0">Žádné emaily ke zpracování. ✅</p>
+  {% endif %}
+</div>
+
+<!-- Čekající akce (systémové) -->
+<div class="card">
+  <h2>⚙️ Systémové akce ({{ pending|length }})</h2>
+  {% if pending %}
+  <div style="display:grid; grid-template-columns: 80px 90px 1fr 100px 130px; gap:8px; padding:4px 0 6px; border-bottom: 1px solid var(--border2); font-size:9px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em">
+    <span>Status</span><span>Zdroj</span><span>Akce / Payload</span><span>Typ</span><span>Vytvořeno</span>
+  </div>
+  {% for a in pending %}
+  <div class="action-row">
+    <span class="badge act-{{ a.status }}">{{ a.status|upper }}</span>
+    <span class="mono src-{{ a.source_type }}">{{ a.source_type }}</span>
+    <div>
+      <div style="font-size:11px;font-weight:500;margin-bottom:2px">{{ a.action_type }}</div>
+      {% if a.payload %}
+      <div class="payload-preview">
+        {% if a.payload is mapping %}
+          {% for k, v in a.payload.items() %}{{ k }}: {{ v }}  {% endfor %}
+        {% else %}{{ a.payload }}{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    <span class="badge pending">{{ a.action_type }}</span>
+    <span class="mono" style="font-size:9px;color:var(--muted)">
+      {% if a.created_at %}{{ a.created_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+    </span>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p class="empty">Žádné čekající akce. 🎉</p>
+  {% endif %}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function doAction(emailId, action) {
+  const btn = event.target;
+  btn.disabled = true; btn.style.opacity = '0.4';
+  try {
+    const r = await fetch(`/api/ingest/email/${emailId}/action/${action}`, {method:'POST'});
+    if (r.ok) {
+      btn.closest('.email-row').style.opacity = '0.3';
+      setTimeout(() => location.reload(), 800);
+    } else {
+      btn.disabled = false; btn.style.opacity = '1';
+    }
+  } catch(e) { btn.disabled = false; btn.style.opacity = '1'; }
+}
+</script>
+{% endblock %}

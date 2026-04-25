@@ -4,6 +4,7 @@ Email ingest — všechny IMAP účty, posledních 7 dní.
 
 import os
 import json
+import re
 import imaplib
 import email
 import email.header
@@ -11,6 +12,60 @@ from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from dotenv import load_dotenv
 from db import get_conn
+
+
+def _extract_body(msg) -> str:
+    """Extrahuje čistý text z emailu (plain text preferred)."""
+    body = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ct = part.get_content_type()
+            cd = part.get_content_disposition()
+            if ct == "text/plain" and cd != "attachment":
+                try:
+                    charset = part.get_content_charset() or "utf-8"
+                    body = part.get_payload(decode=True).decode(charset, errors="replace")
+                    break
+                except Exception:
+                    pass
+        if not body:
+            for part in msg.walk():
+                if part.get_content_type() == "text/html" and part.get_content_disposition() != "attachment":
+                    try:
+                        charset = part.get_content_charset() or "utf-8"
+                        html = part.get_payload(decode=True).decode(charset, errors="replace")
+                        body = re.sub(r'<[^>]+>', ' ', html)
+                        body = re.sub(r'\s+', ' ', body).strip()
+                        break
+                    except Exception:
+                        pass
+    else:
+        try:
+            charset = msg.get_content_charset() or "utf-8"
+            body = msg.get_payload(decode=True).decode(charset, errors="replace")
+        except Exception:
+            pass
+    return body[:4000]
+
+
+def _find_unsubscribe(msg, body_text: str) -> str | None:
+    """Najde unsubscribe URL z headeru nebo těla emailu."""
+    header = msg.get("List-Unsubscribe", "")
+    if header:
+        m = re.search(r'<(https?://[^>]+)>', header)
+        if m:
+            return m.group(1)
+    patterns = [
+        r'https?://\S+unsubscribe\S*',
+        r'https?://\S+odhlasit\S*',
+        r'https?://\S+opt.?out\S*',
+    ]
+    for p in patterns:
+        m = re.search(p, body_text, re.IGNORECASE)
+        if m:
+            url = m.group(0).rstrip('.,)')
+            return url
+    return None
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
 
@@ -23,8 +78,9 @@ ACCOUNTS = [
     {"name": "servicedesk@dxpsolutions.cz","host": os.getenv("IMAP_HOST_SERVICEDESK"), "port": 993, "ssl": True,  "user": os.getenv("IMAP_USER_SERVICEDESK"),   "password": os.getenv("IMAP_PASSWORD_SERVICEDESK")},
     {"name": "dxpavel@gmail.com",         "host": os.getenv("IMAP_HOST_GMAIL"),        "port": 993, "ssl": True,  "user": os.getenv("IMAP_USER_GMAIL"),         "password": os.getenv("IMAP_PASSWORD_GMAIL")},
     {"name": "dxpavel@icloud.com",        "host": os.getenv("IMAP_HOST_ICLOUD"),       "port": 993, "ssl": True,  "user": os.getenv("IMAP_USER_ICLOUD"),        "password": os.getenv("IMAP_PASSWORD_ICLOUD"), "fetch_cmd": "BODY[]"},
-    {"name": "padre@seznam.cz",           "host": os.getenv("IMAP_HOST_SEZNAM"),       "port": 993, "ssl": True,  "user": os.getenv("IMAP_USER_SEZNAM"),        "password": os.getenv("IMAP_PASSWORD_SEZNAM")},
+    {"name": "padre@seznam.cz",           "host": os.getenv("IMAP_HOST_SEZNAM"),       "port": 993, "ssl": True,  "user": os.getenv("IMAP_USER_SEZNAM"),        "password": os.getenv("IMAP_PASSWORD_SEZNAM"),        "supports_idle": False},
     {"name": "postapro@dxpavel.cz",       "host": os.getenv("IMAP_HOST_FORPSI"),       "port": 143, "ssl": False, "user": os.getenv("IMAP_USER_FORPSI"),        "password": os.getenv("IMAP_PASSWORD_FORPSI")},
+    {"name": "zamecnictvi.rozdalovice@gmail.com",     "host": os.getenv("IMAP_HOST_ZAMECNICTVI"), "port": 993, "ssl": True,  "user": os.getenv("IMAP_USER_ZAMECNICTVI"),   "password": os.getenv("IMAP_PASSWORD_ZAMECNICTVI")},
 ]
 
 
@@ -55,13 +111,13 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
     since_str = since.strftime("%d-%b-%Y")
     m = connect(account)
     m.select("INBOX", readonly=True)
-    _, data = m.search(None, f'SINCE {since_str}')
+    _, data = m.uid('SEARCH', None, f'SINCE {since_str}')  # UID-based search → skutečná UID
     uids = data[0].split()
     messages = []
     fetch_cmd = "(BODY[])" if account.get("fetch_cmd") == "BODY[]" else "(RFC822)"
     for uid in uids:
         try:
-            _, raw = m.fetch(uid, fetch_cmd)
+            _, raw = m.uid('FETCH', uid, fetch_cmd)  # UID-based fetch
             raw_bytes = next((item[1] for item in raw if isinstance(item, tuple)), None)
             if not raw_bytes:
                 continue
@@ -88,6 +144,9 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
                 for part in msg.walk()
             )
 
+            body_text = _extract_body(msg)
+            unsubscribe_url = _find_unsubscribe(msg, body_text)
+
             messages.append({
                 "source_id": message_id,
                 "mailbox": account["name"],
@@ -97,6 +156,8 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
                 "sent_at": sent_at,
                 "has_attachments": has_attachments,
                 "imap_uid": int(uid.decode() if isinstance(uid, bytes) else uid),
+                "body_text": body_text,
+                "unsubscribe_url": unsubscribe_url,
                 "raw_payload": {
                     "message_id": message_id,
                     "subject": subject,
@@ -121,9 +182,12 @@ def upsert_messages(messages: list) -> tuple[int, int]:
         cur.execute("""
             INSERT INTO email_messages
                 (source_type, source_id, raw_payload, mailbox, from_address,
-                 to_addresses, subject, sent_at, has_attachments, imap_uid)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (source_id) DO NOTHING
+                 to_addresses, subject, sent_at, has_attachments, imap_uid,
+                 body_text, unsubscribe_url)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (source_id) DO UPDATE SET
+                body_text = COALESCE(EXCLUDED.body_text, email_messages.body_text),
+                unsubscribe_url = COALESCE(EXCLUDED.unsubscribe_url, email_messages.unsubscribe_url)
         """, (
             "email",
             msg["source_id"],
@@ -135,6 +199,8 @@ def upsert_messages(messages: list) -> tuple[int, int]:
             msg["sent_at"],
             msg["has_attachments"],
             msg["imap_uid"],
+            msg.get("body_text"),
+            msg.get("unsubscribe_url"),
         ))
         if cur.rowcount:
             new_count += 1

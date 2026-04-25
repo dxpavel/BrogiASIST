@@ -1,0 +1,429 @@
+import subprocess
+import json
+import os
+import re
+import sqlite3
+import caldav
+from datetime import datetime, timezone, timedelta, date
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+
+app = FastAPI(title="BrogiASIST Apple Bridge", version="1.0")
+
+CALDAV_URL = "https://caldav.icloud.com"
+CALDAV_USER = os.getenv("ICLOUD_USER", "dxpavel@me.com")
+CALDAV_PASS = os.getenv("ICLOUD_PASSWORD", "oqjf-qiul-pmiw-eoib")
+CALDAV_SKIP = {"Garmin Connect", "Siri Suggestions", "Birthdays", "Narozeniny",
+               "Scheduled Reminders", "České svátky", "české svátky",
+               "České státní svátky", "Kalendář bez názvu"}
+
+
+def run_applescript(script: str, timeout: int = 30) -> str:
+    result = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True, text=True, timeout=timeout
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip())
+    return result.stdout.strip()
+
+
+def run_jxa(script: str, timeout: int = 90) -> any:
+    result = subprocess.run(
+        ["osascript", "-l", "JavaScript", "-e", script],
+        capture_output=True, text=True, timeout=timeout
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip())
+    return json.loads(result.stdout.strip())
+
+
+@app.get("/health")
+def health():
+    return {"ok": True, "ts": datetime.now().isoformat()}
+
+
+@app.get("/omnifocus/tasks")
+def omnifocus_tasks():
+    """Vrátí aktivní (nedokončené) tasky z OmniFocus — bulk property fetch."""
+    script = """
+const of2 = Application('OmniFocus');
+const doc = of2.defaultDocument;
+const activeTasks = doc.flattenedTasks.whose({completed: false});
+const ids       = activeTasks.id();
+const names     = activeTasks.name();
+const flags     = activeTasks.flagged();
+const inboxes   = activeTasks.inInbox();
+const dues      = activeTasks.dueDate();
+const defers    = activeTasks.deferDate();
+const modifieds = activeTasks.modificationDate();
+const now = new Date();
+const result = [];
+for (let i = 0; i < ids.length; i++) {
+  let due    = dues[i]      ? dues[i].toISOString()      : null;
+  let defer  = defers[i]    ? defers[i].toISOString()    : null;
+  let mod    = modifieds[i] ? modifieds[i].toISOString() : null;
+  let status = 'available';
+  if (due && new Date(due) < now) status = 'overdue';
+  else if (due) status = 'due_soon';
+  result.push({id: ids[i], name: names[i], flagged: flags[i],
+    in_inbox: inboxes[i], due_at: due, defer_at: defer,
+    modified_at: mod, status: status});
+}
+JSON.stringify(result);
+"""
+    try:
+        tasks = run_jxa(script)
+        return {"ok": True, "count": len(tasks), "tasks": tasks}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/omnifocus/projects")
+def omnifocus_projects():
+    """Vrátí seznam projektů s jejich stavy."""
+    script = """
+const of = Application('OmniFocus');
+const doc = of.defaultDocument;
+const projects = doc.flattenedProjects();
+const result = [];
+for (let i = 0; i < projects.length; i++) {
+    const p = projects[i];
+    try {
+        let due = null, modified = null;
+        try { due = p.dueDate() ? p.dueDate().toISOString() : null; } catch(e) {}
+        try { modified = p.modificationDate() ? p.modificationDate().toISOString() : null; } catch(e) {}
+        result.push({
+            id: p.id(),
+            name: p.name(),
+            status: p.status(),
+            flagged: p.flagged(),
+            due_at: due,
+            modified_at: modified,
+            task_count: p.tasks().length
+        });
+    } catch(e) {}
+}
+JSON.stringify(result);
+"""
+    try:
+        projects = run_jxa(script)
+        return {"ok": True, "count": len(projects), "projects": projects}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/reminders/add")
+def reminders_add(body: dict):
+    """Přidá reminder do Apple Reminders (výchozí seznam)."""
+    name = body.get("name", "").replace('"', '\\"').replace('\n', ' ')
+    reminder_body = body.get("body", "").replace('"', '\\"')
+    list_name = body.get("list", "Reminders")
+    script = f"""
+const rm = Application('Reminders');
+const lists = rm.lists.whose({{name: "{list_name}"}})();
+const lst = lists.length > 0 ? lists[0] : rm.lists[0];
+const r = rm.Reminder({{name: "{name}", body: "{reminder_body}"}});
+lst.reminders.push(r);
+JSON.stringify({{ok: true, name: "{name}"}});
+"""
+    try:
+        result = run_jxa(script)
+        return {"ok": True, "name": name}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/notes/add")
+def notes_add(body: dict):
+    """Přidá novou poznámku do Apple Notes."""
+    name = body.get("name", "").replace('"', '\\"').replace('\n', ' ')
+    note_body = body.get("body", "").replace('"', '\\"').replace('\n', '\\n')
+    folder_name = body.get("folder", "")
+    if folder_name:
+        folder_name = folder_name.replace('"', '\\"')
+        script = f"""
+const notes = Application('Notes');
+const folders = notes.folders.whose({{name: "{folder_name}"}})();
+const folder = folders.length > 0 ? folders[0] : notes.defaultAccount.folders[0];
+const n = notes.Note({{name: "{name}", body: "{note_body}"}});
+folder.notes.push(n);
+JSON.stringify({{ok: true, name: "{name}"}});
+"""
+    else:
+        script = f"""
+const notes = Application('Notes');
+const n = notes.Note({{name: "{name}", body: "{note_body}"}});
+notes.defaultAccount.notes.push(n);
+JSON.stringify({{ok: true, name: "{name}"}});
+"""
+    try:
+        result = run_jxa(script)
+        return {"ok": True, "name": name}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/omnifocus/add_task")
+def omnifocus_add_task(body: dict):
+    """Přidá task do OmniFocus inboxu."""
+    name = body.get("name", "").replace('"', '\\"')
+    note = body.get("note", "").replace('"', '\\"')
+    flagged = "true" if body.get("flagged", False) else "false"
+    script = f"""
+const of2 = Application('OmniFocus');
+const doc = of2.defaultDocument;
+const task = of2.Task({{name: "{name}", note: "{note}", flagged: {flagged}}});
+doc.inboxTasks.push(task);
+JSON.stringify({{ok: true, name: "{name}"}});
+"""
+    try:
+        result = run_jxa(script)
+        return {"ok": True, "name": name}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/imessage/recent")
+def imessage_recent(limit: int = 50):
+    """Vrátí posledních N iMessage zpráv."""
+    script = f"""
+tell application "Messages"
+    set msgs to messages of (first chat whose id is not missing value)
+    -- fallback: přes DB
+end tell
+"""
+    # iMessage přes AppleScript je omezený — lepší přes sqlite přímo
+    import os, sqlite3
+    db_path = os.path.expanduser("~/Library/Messages/chat.db")
+    if not os.path.exists(db_path):
+        raise HTTPException(status_code=404, detail="chat.db nenalezeno")
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                m.guid,
+                m.text,
+                m.date/1000000000 + 978307200 as ts,
+                m.is_from_me,
+                h.id as contact
+            FROM message m
+            LEFT JOIN handle h ON m.handle_id = h.rowid
+            ORDER BY m.date DESC
+            LIMIT ?
+        """, (limit,))
+        rows = cur.fetchall()
+        conn.close()
+        messages = [
+            {
+                "guid": r[0],
+                "text": r[1],
+                "sent_at": datetime.fromtimestamp(r[2]).isoformat() if r[2] else None,
+                "is_from_me": bool(r[3]),
+                "contact": r[4]
+            }
+            for r in rows if r[1]
+        ]
+        return {"ok": True, "count": len(messages), "messages": messages}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/notes/all")
+def notes_all():
+    """Vrátí všechny Apple Notes (id, name, body, folder, dates)."""
+    script = """
+const notes = Application('Notes');
+const allNotes = notes.notes();
+const result = [];
+for (let i = 0; i < allNotes.length; i++) {
+  const n = allNotes[i];
+  try {
+    let mod = null, created = null;
+    try { mod     = n.modificationDate() ? n.modificationDate().toISOString() : null; } catch(e) {}
+    try { created = n.creationDate()     ? n.creationDate().toISOString()     : null; } catch(e) {}
+    result.push({
+      id: n.id(), name: n.name() || '',
+      body: (n.body() || '').substring(0, 2000),
+      modified_at: mod, created_at: created
+    });
+  } catch(e) {}
+}
+JSON.stringify(result);
+"""
+    try:
+        items = run_jxa(script)
+        return {"ok": True, "count": len(items), "notes": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/reminders/all")
+def reminders_all():
+    """Vrátí nedokončené Reminders ze všech seznamů."""
+    script = """
+const rm = Application('Reminders');
+const lists = rm.lists();
+const result = [];
+for (let i = 0; i < lists.length; i++) {
+  const l = lists[i];
+  const listName = l.name();
+  const items = l.reminders();
+  for (let j = 0; j < items.length; j++) {
+    const r = items[j];
+    try {
+      const completed = r.completed();
+      let due = null, remind = null, mod = null;
+      try { due    = r.dueDate()            ? r.dueDate().toISOString()            : null; } catch(e) {}
+      try { remind = r.remindMeDate()       ? r.remindMeDate().toISOString()       : null; } catch(e) {}
+      try { mod    = r.modificationDate()   ? r.modificationDate().toISOString()   : null; } catch(e) {}
+      result.push({id: r.id(), name: r.name(), list: listName, body: r.body() || null,
+        flagged: r.flagged(), completed: completed,
+        due_at: due, remind_at: remind, modified_at: mod});
+    } catch(e) {}
+  }
+}
+JSON.stringify(result);
+"""
+    try:
+        items = run_jxa(script)
+        return {"ok": True, "count": len(items), "reminders": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/contacts/all")
+def contacts_all():
+    """Vrátí kontakty přímo ze sqlite databáze Contacts (rychlé)."""
+    # Preferuj source databázi (iCloud sync), fallback na hlavní
+    src_base = os.path.expanduser("~/Library/Application Support/AddressBook/Sources")
+    db_path = None
+    if os.path.exists(src_base):
+        for d in os.listdir(src_base):
+            candidate = os.path.join(src_base, d, "AddressBook-v22.abcddb")
+            if os.path.exists(candidate):
+                db_path = candidate
+                break
+    if not db_path:
+        db_path = os.path.expanduser(
+            "~/Library/Application Support/AddressBook/AddressBook-v22.abcddb"
+        )
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        cur = conn.cursor()
+        # Základní info o osobách
+        cur.execute("""
+            SELECT r.ZUNIQUEID, r.ZFIRSTNAME, r.ZLASTNAME, r.ZORGANIZATION, r.ZMODIFICATIONDATE
+            FROM ZABCDRECORD r
+            WHERE r.ZUNIQUEID LIKE '%:ABPerson'
+        """)
+        people = {row[0]: {"id": row[0], "first": row[1], "last": row[2],
+                            "org": row[3], "modified_at": row[4],
+                            "emails": [], "phones": []}
+                  for row in cur.fetchall()}
+        # Emaily
+        cur.execute("""
+            SELECT r.ZUNIQUEID, e.ZLABEL, e.ZADDRESS
+            FROM ZABCDEMAILADDRESS e
+            JOIN ZABCDRECORD r ON e.ZOWNER = r.Z_PK
+            WHERE r.ZUNIQUEID LIKE '%:ABPerson'
+        """)
+        for uid, label, addr in cur.fetchall():
+            if uid in people and addr:
+                people[uid]["emails"].append({"label": label or "", "value": addr})
+        # Telefony
+        cur.execute("""
+            SELECT r.ZUNIQUEID, p.ZLABEL, p.ZFULLNUMBER
+            FROM ZABCDPHONENUMBER p
+            JOIN ZABCDRECORD r ON p.ZOWNER = r.Z_PK
+            WHERE r.ZUNIQUEID LIKE '%:ABPerson'
+        """)
+        for uid, label, num in cur.fetchall():
+            if uid in people and num:
+                people[uid]["phones"].append({"label": label or "", "value": num})
+        conn.close()
+        # Převod Mac Core Data timestamp (sekund od 2001-01-01) na ISO
+        epoch = datetime(2001, 1, 1, tzinfo=timezone.utc)
+        result = []
+        for p in people.values():
+            mod = None
+            if p["modified_at"]:
+                try:
+                    mod = (epoch + timedelta(seconds=p["modified_at"])).isoformat()
+                except Exception:
+                    pass
+            result.append({**p, "modified_at": mod})
+        return {"ok": True, "count": len(result), "contacts": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _dt_to_iso(dt) -> str | None:
+    if dt is None:
+        return None
+    if isinstance(dt, datetime):
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    # date (all-day)
+    return dt.isoformat()
+
+
+@app.get("/calendar/events")
+def calendar_events(days: int = 60):
+    """Vrátí události z iCloud Calendar přes CalDAV API."""
+    try:
+        client = caldav.DAVClient(url=CALDAV_URL, username=CALDAV_USER, password=CALDAV_PASS)
+        principal = client.principal()
+        calendars = principal.calendars()
+        now = datetime.now(tz=timezone.utc)
+        future = now + timedelta(days=days)
+        events = []
+        for cal in calendars:
+            try:
+                cal_name = cal.get_display_name() or ""
+                if cal_name in CALDAV_SKIP:
+                    continue
+                cal_events = cal.search(start=now, end=future, event=True, expand=True)
+                for ev in cal_events:
+                    try:
+                        ical = ev.icalendar_instance
+                        for component in ical.walk():
+                            if component.name != "VEVENT":
+                                continue
+                            uid = str(component.get("UID", ""))
+                            summary = str(component.get("SUMMARY", "(bez názvu)"))
+                            location_raw = component.get("LOCATION")
+                            location = str(location_raw) if location_raw else None
+                            dtstart_prop = component.get("DTSTART")
+                            dtend_prop = component.get("DTEND")
+                            dtstart = dtstart_prop.dt if dtstart_prop else None
+                            dtend = dtend_prop.dt if dtend_prop else None
+                            if dtstart is None:
+                                continue
+                            all_day = isinstance(dtstart, date) and not isinstance(dtstart, datetime)
+                            start_iso = _dt_to_iso(dtstart)
+                            source_id = f"{uid}_{start_iso}" if uid else start_iso
+                            events.append({
+                                "id": source_id,
+                                "summary": summary,
+                                "calendar": cal_name,
+                                "start_at": start_iso,
+                                "end_at": _dt_to_iso(dtend),
+                                "all_day": all_day,
+                                "location": location,
+                            })
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        events.sort(key=lambda e: e["start_at"] or "")
+        return {"ok": True, "count": len(events), "events": events}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "events": []}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=9100)

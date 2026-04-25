@@ -9,16 +9,25 @@ import logging
 import sys
 import os
 import time
+import threading
 from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
+import uvicorn
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from ingest_email_idle import start_all as start_idle_listeners
+from api import app as _api_app
 from ingest_email import ACCOUNTS, fetch_messages, upsert_messages
 from ingest_rss import get_token as rss_token, fetch_items, upsert_articles
 from ingest_youtube import get_access_token, get_subscriptions, get_uploads_playlist, get_recent_videos, upsert_videos
 from ingest_mantis import fetch_issues as mantis_fetch, upsert_issues as mantis_upsert, PROJECT_IDS
+from ingest_omnifocus import ingest_omnifocus
+from ingest_apple_apps import ingest_notes, ingest_reminders, ingest_contacts, ingest_calendar
+from telegram_callback import run_callback_loop
+from classify_emails import classify_new_emails
+from notify_emails import notify_classified_emails
+from imap_status import job_imap_login_check
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,19 +105,41 @@ def job_youtube():
 if __name__ == "__main__":
     log.info("=== BrogiASIST Scheduler START ===")
 
+    # Ingest API (port 9001)
+    api_thread = threading.Thread(
+        target=lambda: uvicorn.run(_api_app, host="0.0.0.0", port=9001, log_level="warning"),
+        daemon=True, name="ingest-api"
+    )
+    api_thread.start()
+    log.info("Ingest API: http://0.0.0.0:9001 START")
+
+    # Telegram callback loop (daemon thread)
+    tg_thread = threading.Thread(target=run_callback_loop, daemon=True, name="tg-callback")
+    tg_thread.start()
+    log.info("Telegram callback loop: START")
+
     # Email — IMAP IDLE push listeners (daemon threads)
     idle_threads = start_idle_listeners()
     log.info(f"Email IDLE listeners: {len(idle_threads)} účtů")
 
     # RSS + YouTube — APScheduler polling
     scheduler = BackgroundScheduler(timezone="Europe/Prague")
-    scheduler.add_job(job_email_scan, "interval", minutes=30, id="email_scan", next_run_time=datetime.now())
-    scheduler.add_job(job_rss,        "interval", minutes=30, id="rss",        next_run_time=datetime.now())
-    scheduler.add_job(job_mantis,     "interval", minutes=30, id="mantis",     next_run_time=datetime.now())
-    scheduler.add_job(job_youtube,    "interval", hours=2,    id="youtube",    next_run_time=datetime.now())
+    scheduler.add_job(job_email_scan,  "interval", minutes=30, id="email_scan",  next_run_time=datetime.now())
+    scheduler.add_job(job_rss,         "interval", minutes=30, id="rss",         next_run_time=datetime.now())
+    scheduler.add_job(job_mantis,      "interval", minutes=30, id="mantis",      next_run_time=datetime.now())
+    scheduler.add_job(job_youtube,     "interval", hours=2,    id="youtube",     next_run_time=datetime.now())
+    scheduler.add_job(ingest_omnifocus, "interval", minutes=10, id="omnifocus",  next_run_time=datetime.now())
+    now_tz = datetime.now(tz=timezone.utc)
+    scheduler.add_job(ingest_notes,     "interval", minutes=30, id="notes",      next_run_time=now_tz)
+    scheduler.add_job(ingest_reminders, "interval", minutes=15, id="reminders",  next_run_time=now_tz)
+    scheduler.add_job(ingest_contacts,  "interval", hours=6,    id="contacts",   next_run_time=now_tz)
+    scheduler.add_job(ingest_calendar,       "interval", minutes=15, id="calendar",  next_run_time=now_tz)
+    scheduler.add_job(classify_new_emails,      "interval", minutes=5,  id="classify",  next_run_time=now_tz)
+    scheduler.add_job(notify_classified_emails, "interval", minutes=2,  id="notify",    next_run_time=now_tz)
+    scheduler.add_job(job_imap_login_check,     "interval", minutes=5,  id="imap_login", next_run_time=now_tz)
     scheduler.start()
 
-    log.info("RSS/30min, YouTube/2h — běží")
+    log.info("RSS/30min, YouTube/2h, OmniFocus/10min, Notes/30min, Reminders/15min, Contacts/6h, Calendar/15min — běží")
 
     try:
         while True:

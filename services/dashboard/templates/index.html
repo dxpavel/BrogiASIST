@@ -1,73 +1,51 @@
-<!DOCTYPE html>
-<html lang="cs">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BrogiASIST — Dashboard</title>
-<meta http-equiv="refresh" content="30">
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'SF Mono', 'Fira Code', monospace; background: #0d1117; color: #c9d1d9; font-size: 11px; padding: 12px; }
-  h1 { color: #58a6ff; font-size: 14px; display: inline; }
-  .meta { display: inline; color: #6e7681; font-size: 10px; margin-left: 12px; }
-  .header { margin-bottom: 10px; }
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block refresh %}30{% endblock %}
+{% block nav_dashboard %}active{% endblock %}
 
-  /* Hlavní grid: pevné sloupce */
-  .grid-main { display: grid; grid-template-columns: 180px 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px; }
-  .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; }
-  .card h2 { font-size: 9px; color: #6e7681; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; border-bottom: 1px solid #21262d; padding-bottom: 4px; }
+{% block extra_style %}
+  .grid-main { display: grid; grid-template-columns: 180px 180px 1fr 1fr; gap: 10px; }
+  .modal-bg { display:none; position:fixed; inset:0; background:rgba(0,0,0,.75); z-index:100; align-items:center; justify-content:center; }
+  .modal-bg.open { display:flex; }
+  .modal { background:var(--surface); border:1px solid var(--border2); border-radius:8px; padding:16px; min-width:420px; max-width:600px; width:90%; }
+  .modal h3 { color:var(--primary-l); font-size:12px; margin-bottom:8px; }
+  .modal .mmeta { color:var(--muted); font-size:10px; margin-bottom:12px; font-family:'JetBrains Mono',monospace; }
+  .tag-group { margin-bottom:10px; }
+  .tag-group label { display:block; color:var(--muted); font-size:9px; text-transform:uppercase; letter-spacing:.06em; margin-bottom:4px; }
+  .tag-btn { display:inline-block; padding:3px 8px; border-radius:3px; font-size:10px; font-weight:600;
+             border:1px solid var(--border2); background:var(--bg); color:var(--muted); cursor:pointer; margin:2px; transition:.1s; }
+  .tag-btn.active { border-color:var(--primary); color:var(--primary-l); background:#0d1f13; }
+  .tag-btn:hover { background:#1a2128; }
+  .modal-actions { display:flex; gap:8px; margin-top:14px; justify-content:flex-end; }
+  .btn-save  { background:#1a3820; color:var(--primary-l); border:none; padding:5px 14px; border-radius:4px; cursor:pointer; font-size:10px; font-weight:700; }
+  .btn-spam  { background:#3a1a1a; color:var(--red); border:none; padding:5px 14px; border-radius:4px; cursor:pointer; font-size:10px; font-weight:700; }
+  .btn-close { background:transparent; color:var(--muted); border:1px solid var(--border2); padding:5px 14px; border-radius:4px; cursor:pointer; font-size:10px; }
+  .btn-preview { background:none; border:none; cursor:pointer; font-size:11px; padding:1px 3px;
+                 opacity:.4; transition:.1s; line-height:1; }
+  .btn-preview:hover { opacity:1; }
+  /* email filters */
+  .ef-bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:6px; }
+  .ef-bar input { background:var(--bg); border:1px solid var(--border2); color:var(--text); padding:2px 7px; border-radius:4px; font-size:10px; font-family:'JetBrains Mono',monospace; outline:none; width:150px; }
+  .ef-bar input:focus { border-color:var(--primary-d); }
+  .ef-chips { display:flex; gap:3px; flex-wrap:wrap; }
+  .ef-chip { padding:1px 6px; border-radius:3px; font-size:9px; font-weight:700; cursor:pointer; border:1px solid transparent; opacity:.55; transition:.1s; }
+  .ef-chip.on { opacity:1; border-color:var(--border2); }
+  .ef-chip.all { background:var(--surface); color:var(--text); border-color:var(--border2); opacity:1; }
+  .ef-chip.all.on { border-color:var(--primary); color:var(--primary-l); }
+  .ef-sep { width:1px; height:16px; background:var(--border); align-self:center; }
+  .ecount { font-family:'JetBrains Mono',monospace; font-size:9px; color:var(--muted); margin-left:2px; }
+{% endblock %}
 
-  /* Badges */
-  .badge { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 700; }
-  .ok      { background: #1a4a1a; color: #3fb950; }
-  .fail    { background: #4a1a1a; color: #f85149; }
-  .pending { background: #2a2a1a; color: #e3b341; }
-
-  /* Tabulky */
-  table { width: 100%; border-collapse: collapse; }
-  td, th { padding: 2px 5px; text-align: left; border-bottom: 1px solid #1c2128; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 0; }
-  th { color: #6e7681; font-size: 9px; font-weight: 400; }
-  td.num { text-align: right; color: #58a6ff; width: 36px; max-width: 36px; }
-  td.name { width: 99%; }
-
-  /* Systém — status řádky */
-  .svc-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; border-bottom: 1px solid #1c2128; }
-  .svc-row:last-child { border-bottom: none; }
-
-  /* Counts */
-  .counts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 10px; padding-top: 8px; border-top: 1px solid #21262d; }
-  .count-item { text-align: center; }
-  .count-num   { font-size: 18px; font-weight: 700; color: #58a6ff; line-height: 1; }
-  .count-label { font-size: 8px; color: #6e7681; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-  /* Akce — full width */
-  .card-full { grid-column: 1 / -1; }
-  .empty { color: #6e7681; font-style: italic; font-size: 10px; padding: 4px 0; }
-</style>
-</head>
-<body>
-
-<div class="header">
-  <h1>BrogiASIST</h1>
-  <span class="meta">{{ now }} · auto-refresh 30s</span>
-</div>
-
+{% block content %}
 <div class="grid-main">
 
   <!-- Systém + Záznamy -->
   <div class="card">
     <h2>Systém &amp; DB</h2>
-    <div class="svc-row">
-      <span>PostgreSQL</span>
-      <span class="badge {{ 'ok' if db.ok else 'fail' }}">{{ 'OK' if db.ok else 'ERR' }}</span>
-    </div>
-    <div class="svc-row">
-      <span>ChromaDB</span>
-      <span class="badge {{ 'ok' if chroma.ok else 'fail' }}">{{ 'OK' if chroma.ok else 'ERR' }}</span>
-    </div>
-    {% if not db.ok %}
-    <div style="color:#f85149;font-size:9px;margin-top:4px;">{{ db.error }}</div>
-    {% endif %}
+    <div class="svc-row"><span>PostgreSQL</span><span class="badge {{ 'ok' if db.ok else 'fail' }}">{{ 'OK' if db.ok else 'ERR' }}</span></div>
+    <div class="svc-row"><span>ChromaDB</span><span class="badge {{ 'ok' if chroma.ok else 'fail' }}">{{ 'OK' if chroma.ok else 'ERR' }}</span></div>
+    <div class="svc-row"><span>Apple Bridge</span><span class="badge {{ 'ok' if apple.ok else 'fail' }}">{{ 'OK' if apple.ok else 'ERR' }}</span></div>
+    {% if not db.ok %}<div style="color:var(--red);font-size:9px;margin-top:4px;">{{ db.error }}</div>{% endif %}
     {% if db.ok %}
     <div class="counts">
       {% for table, count in db.counts.items() %}
@@ -80,99 +58,348 @@
     {% endif %}
   </div>
 
-  <!-- Email mailboxy -->
+  <!-- IMAP status -->
   <div class="card">
-    <h2>Email — mailboxy</h2>
-    {% if db.ok and db.email_stats %}
-    <table>
-      <tr><th class="name">Mailbox</th><th>Zpráv</th></tr>
-      {% for row in db.email_stats %}
-      <tr>
-        <td class="name">{{ row.mailbox }}</td>
-        <td class="num">{{ row.count }}</td>
-      </tr>
-      {% endfor %}
-    </table>
-    {% else %}
-    <div class="empty">Žádná data</div>
-    {% endif %}
+    <h2>📧 IMAP</h2>
+    {% for r in imap_rows %}
+    <div class="svc-row" title="{{ r.account }} — {{ r.idle_state }}{% if r.error %} — {{ r.error }}{% endif %}">
+      <span style="font-family:var(--font-mono);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.account }}</span>
+      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;
+        background:{% if r.dot == 'green' %}var(--accent){% elif r.dot == 'orange' %}var(--orange){% else %}var(--red){% endif %};
+        box-shadow:0 0 4px {% if r.dot == 'green' %}var(--accent){% elif r.dot == 'orange' %}var(--orange){% else %}var(--red){% endif %}">
+      </span>
+    </div>
+    {% endfor %}
   </div>
 
-  <!-- RSS feedy -->
-  <div class="card">
-    <h2>RSS — feedy</h2>
-    {% if db.ok and db.rss_stats %}
-    <table>
-      <tr><th class="name">Feed</th><th>Art.</th></tr>
-      {% for row in db.rss_stats %}
-      <tr>
-        <td class="name">{{ row.feed or '—' }}</td>
-        <td class="num">{{ row.count }}</td>
+  <!-- Email log — NAHOŘE -->
+  <div class="card" style="grid-column:span 2">
+    <h2>Email — přijaté zprávy <span class="ecount" id="emailCount"></span></h2>
+    {% if db.ok and db.email_log %}
+
+    <!-- filter bar -->
+    <div class="ef-bar">
+      <input id="efSearch" type="text" placeholder="Hledat předmět / od…" oninput="efFilter()">
+      <div class="ef-sep"></div>
+      <div class="ef-chips" id="efFirma">
+        <span class="ef-chip all on" data-val="">Vše</span>
+        <span class="ef-chip f-dxp"   data-val="DXPSOLUTIONS">DXP</span>
+        <span class="ef-chip f-mbank" data-val="MBANK">MBANK</span>
+        <span class="ef-chip f-zamek" data-val="ZAMECNICTVI">ZAMEK</span>
+        <span class="ef-chip f-priv"  data-val="PRIVATE">PRIV</span>
+        <span class="ef-chip"         data-val="__none__" style="background:var(--surface);color:var(--muted)">?</span>
+      </div>
+      <div class="ef-sep"></div>
+      <div class="ef-chips" id="efTyp">
+        <span class="ef-chip all on"   data-val="">Vše</span>
+        <span class="ef-chip t-ukol"   data-val="ÚKOL">ÚKOL</span>
+        <span class="ef-chip t-fakt"   data-val="FAKTURA">FAKT</span>
+        <span class="ef-chip t-notif"  data-val="NOTIFIKACE">NOTIF</span>
+        <span class="ef-chip t-nabid"  data-val="NABÍDKA">NABÍD</span>
+        <span class="ef-chip t-potv"   data-val="POTVRZENÍ">POTV</span>
+        <span class="ef-chip t-info"   data-val="INFO">INFO</span>
+        <span class="ef-chip t-nl"     data-val="NEWSLETTER">NL</span>
+        <span class="ef-chip fail"     data-val="SPAM">SPAM</span>
+      </div>
+      <div class="ef-sep"></div>
+      <div class="ef-chips" id="efTask">
+        <span class="ef-chip all on"   data-val="">Vše</span>
+        <span class="ef-chip ts-ceka"  data-val="ČEKÁ-NA-MĚ">ČEKÁ-MĚ</span>
+        <span class="ef-chip ts-ceka"  data-val="ČEKÁ-NA-ODPOVĚĎ">ČEKÁ-ODP</span>
+        <span class="ef-chip ok"       data-val="HOTOVO">HOTOVO</span>
+      </div>
+    </div>
+
+    <div style="max-height:330px;overflow-y:auto;">
+    <table id="emailTable" style="table-layout:fixed;width:100%;">
+      <colgroup><col style="width:22px"><col style="width:16px"><col style="width:20%"><col style="width:auto"><col style="width:110px"><col style="width:60px"></colgroup>
+      <tr><th></th><th></th><th>Od</th><th>Předmět</th><th>Tagy</th><th style="text-align:right">Čas</th></tr>
+      {% for m in db.email_log %}
+      {% set fc = {'DXPSOLUTIONS':'f-dxp','MBANK':'f-mbank','ZAMECNICTVI':'f-zamek','PRIVATE':'f-priv'} %}
+      {% set tc = {'ÚKOL':'t-ukol','FAKTURA':'t-fakt','INFO':'t-info','NEWSLETTER':'t-nl','NOTIFIKACE':'t-notif','NABÍDKA':'t-nabid','POTVRZENÍ':'t-potv','ESHOP':'t-nabid','SPAM':'fail'} %}
+      <tr class="clickable" onclick="openEmailModal('{{ m.id }}')"
+          data-firma="{{ m.firma or '' }}"
+          data-typ="{{ m.typ or '' }}"
+          data-task="{{ m.task_status or '' }}"
+          data-from="{{ m.from_name|lower }}"
+          data-subject="{{ (m.subject or '')|lower }}">
+        <td style="width:22px;padding:2px 3px">{% if m.firma %}<span class="badge {{ fc.get(m.firma, 'pending') }}" title="{{ m.firma }}">{{ m.firma[0] }}</span>{% endif %}</td>
+        <td style="width:16px;font-size:10px;text-align:center" title="{{ 'Ručně kalibrováno' if m.human_reviewed else 'AI klasifikace' }}">{{ '👤' if m.human_reviewed else ('🤖' if m.firma or m.typ else '') }}</td>
+        <td style="overflow:hidden;text-overflow:ellipsis;font-size:9px;font-family:var(--font-mono)">{{ m.from_address }}</td>
+        <td style="overflow:hidden;text-overflow:ellipsis;font-size:10px">{{ m.subject }}</td>
+        <td style="white-space:nowrap;overflow:hidden">
+          {% if m.typ %}<span class="badge {{ tc.get(m.typ, 't-info') }}">{{ m.typ }}</span>{% endif %}
+          {% if m.task_status and 'ČEKÁ' in m.task_status %}<span class="badge ts-ceka">!</span>{% endif %}
+          {% if not m.firma and not m.typ %}<span style="color:#3d4450;font-size:9px">—</span>{% endif %}
+        </td>
+        <td style="text-align:right;color:var(--muted);white-space:nowrap">{{ m.sent_at.strftime('%d.%m %H:%M') if m.sent_at else '—' }}</td>
       </tr>
       {% endfor %}
-    </table>
-    {% else %}
-    <div class="empty">Žádná data</div>
-    {% endif %}
+    </table></div>
+    {% else %}<div class="empty">Žádné emaily</div>{% endif %}
   </div>
 
-  <!-- YouTube -->
-  <div class="card">
-    <h2>YouTube — kanály (7 dní)</h2>
-    {% if db.ok and db.yt_stats %}
-    <table>
-      <tr><th class="name">Kanál</th><th>Vid.</th></tr>
-      {% for row in db.yt_stats %}
+  <!-- Apple Notes — pod emailem -->
+  <div class="card" style="grid-column:span 2">
+    <h2>Apple Notes (posledních 10)</h2>
+    {% if db.ok and db.notes_recent %}
+    <table style="table-layout:fixed;width:100%;">
+      <colgroup><col style="width:22px"><col style="width:auto"><col style="width:80px"></colgroup>
+      <tr><th></th><th>Název</th><th style="text-align:right">Upraveno</th></tr>
+      {% for n in db.notes_recent %}
       <tr>
-        <td class="name">{{ row.channel or '—' }}</td>
-        <td class="num">{{ row.count }}</td>
+        <td><button class="btn-preview" onclick="openNotePreview({{ loop.index0 }})" title="Náhled">👁</button></td>
+        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ n.name }}</td>
+        <td style="text-align:right;color:var(--muted);white-space:nowrap">{{ n.modified_at.strftime('%d.%m %H:%M') if n.modified_at else '—' }}</td>
       </tr>
       {% endfor %}
     </table>
-    {% else %}
-    <div class="empty">Žádná data</div>
-    {% endif %}
+    {% else %}<div class="empty">Žádné notes</div>{% endif %}
+  </div>
+
+  <!-- Kalendář — pod emailem -->
+  <div class="card" style="grid-column:span 2">
+    <h2>Kalendář — nadcházející události</h2>
+    {% if db.ok and db.calendar_upcoming %}
+    <table style="table-layout:fixed;width:100%;">
+      <colgroup><col style="width:22px"><col style="width:65px"><col style="width:auto"><col style="width:70px"></colgroup>
+      <tr><th></th><th>Kdy</th><th>Událost</th><th>Kalendář</th></tr>
+      {% for e in db.calendar_upcoming %}
+      <tr>
+        <td><button class="btn-preview" onclick="openCalPreview({{ loop.index0 }})" title="Náhled">👁</button></td>
+        <td style="white-space:nowrap;color:var(--yellow)">{{ e.start_at.strftime('%d.%m %H:%M') if e.start_at else '—' }}</td>
+        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ e.summary or '—' }}</td>
+        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">{{ e.calendar or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<div class="empty">Žádné události / Calendar bridge offline</div>{% endif %}
   </div>
 
   <!-- MantisBT -->
-  <div class="card card-full" style="grid-column: span 2;">
-    <h2>MantisBT — issues per projekt</h2>
+  <div class="card" style="grid-column:span 2">
+    <h2>MantisBT — issues</h2>
     {% if db.ok and db.mantis_stats %}
-    <table>
-      <tr><th>Projekt</th><th>Status</th><th>Počet</th></tr>
-      {% for row in db.mantis_stats %}
-      <tr>
-        <td class="name">{{ row.project or '—' }}</td>
-        <td>{{ row.status }}</td>
-        <td class="num">{{ row.count }}</td>
-      </tr>
-      {% endfor %}
+    <table><tr><th>Projekt</th><th>Status</th><th>Počet</th></tr>
+    {% for row in db.mantis_stats %}<tr><td class="name">{{ row.project or '—' }}</td><td>{{ row.status }}</td><td class="num">{{ row.count }}</td></tr>{% endfor %}
     </table>
-    {% else %}
-    <div class="empty">Žádná data</div>
-    {% endif %}
+    {% else %}<div class="empty">Žádná data</div>{% endif %}
+  </div>
+
+  <!-- OmniFocus -->
+  <div class="card" style="grid-column:span 2">
+    <h2>OmniFocus — tasky</h2>
+    {% if db.ok and db.omnifocus_stats %}
+    <table><tr><th>Status</th><th>Počet</th></tr>
+    {% for row in db.omnifocus_stats %}
+    <tr><td class="name">{{ row.status or '—' }}</td>
+    <td class="num" style="color:{{ 'var(--red)' if row.status in ('overdue','DueSoon') else 'var(--blue)' }}">{{ row.count }}</td></tr>
+    {% endfor %}</table>
+    {% else %}<div class="empty">Žádné tasky / bridge offline</div>{% endif %}
+  </div>
+
+  <!-- Statické karty — dole -->
+  <div class="card" style="grid-column:span 1">
+    <h2>Email — mailboxy</h2>
+    {% if db.ok and db.email_stats %}
+    <table><tr><th class="name">Mailbox</th><th>Zpráv</th></tr>
+    {% for row in db.email_stats %}<tr><td class="name">{{ row.mailbox }}</td><td class="num">{{ row.count }}</td></tr>{% endfor %}
+    </table>
+    {% else %}<div class="empty">Žádná data</div>{% endif %}
+  </div>
+
+  <div class="card" style="grid-column:span 1">
+    <h2>RSS — feedy</h2>
+    {% if db.ok and db.rss_stats %}
+    <table><tr><th class="name">Feed</th><th>Art.</th></tr>
+    {% for row in db.rss_stats %}<tr><td class="name">{{ row.feed or '—' }}</td><td class="num">{{ row.count }}</td></tr>{% endfor %}
+    </table>
+    {% else %}<div class="empty">Žádná data</div>{% endif %}
+  </div>
+
+  <div class="card" style="grid-column:span 2">
+    <h2>YouTube — kanály (7 dní)</h2>
+    {% if db.ok and db.yt_stats %}
+    <table><tr><th class="name">Kanál</th><th>Vid.</th></tr>
+    {% for row in db.yt_stats %}<tr><td class="name">{{ row.channel or '—' }}</td><td class="num">{{ row.count }}</td></tr>{% endfor %}
+    </table>
+    {% else %}<div class="empty">Žádná data</div>{% endif %}
   </div>
 
   <!-- Poslední akce -->
   <div class="card card-full">
     <h2>Poslední akce</h2>
     {% if db.ok and db.recent_actions %}
-    <table>
-      <tr><th>Zdroj</th><th>Typ akce</th><th>Status</th><th>Kdy</th></tr>
-      {% for a in db.recent_actions %}
-      <tr>
-        <td>{{ a.source_type }}</td>
-        <td>{{ a.action_type }}</td>
-        <td><span class="badge {{ 'ok' if a.status == 'executed' else ('fail' if a.status == 'failed' else 'pending') }}">{{ a.status }}</span></td>
-        <td>{{ a.created_at.strftime('%Y-%m-%d %H:%M') if a.created_at else '—' }}</td>
-      </tr>
-      {% endfor %}
-    </table>
-    {% else %}
-    <div class="empty">Žádné akce zatím</div>
-    {% endif %}
+    <table><tr><th>Zdroj</th><th>Typ akce</th><th>Status</th><th>Kdy</th></tr>
+    {% for a in db.recent_actions %}
+    <tr>
+      <td>{{ a.source_type }}</td><td>{{ a.action_type }}</td>
+      <td><span class="badge {{ 'ok' if a.status == 'executed' else ('fail' if a.status == 'failed' else 'pending') }}">{{ a.status }}</span></td>
+      <td>{{ a.created_at.strftime('%Y-%m-%d %H:%M') if a.created_at else '—' }}</td>
+    </tr>
+    {% endfor %}</table>
+    {% else %}<div class="empty">Žádné akce zatím</div>{% endif %}
   </div>
 
 </div>
-</body>
-</html>
+
+<!-- Notes preview modal -->
+<div class="modal-bg" id="noteModal" onclick="if(event.target===this)closeNoteModal()">
+  <div class="modal">
+    <h3 id="noteModalTitle">—</h3>
+    <div class="mmeta" id="noteModalMeta">—</div>
+    <div id="noteModalBody" style="font-size:10px;color:var(--text);white-space:pre-wrap;max-height:300px;overflow-y:auto;font-family:'JetBrains Mono',monospace;background:var(--bg);padding:8px;border-radius:4px;margin-top:8px;"></div>
+    <div class="modal-actions"><button class="btn-close" onclick="closeNoteModal()">Zavřít</button></div>
+  </div>
+</div>
+
+<!-- Calendar preview modal -->
+<div class="modal-bg" id="calModal" onclick="if(event.target===this)closeCalModal()">
+  <div class="modal">
+    <h3 id="calModalTitle">—</h3>
+    <div id="calModalBody" style="font-size:11px;color:var(--text);margin-top:8px;line-height:1.6;"></div>
+    <div class="modal-actions"><button class="btn-close" onclick="closeCalModal()">Zavřít</button></div>
+  </div>
+</div>
+
+<!-- Email detail modal -->
+<div class="modal-bg" id="emailModal" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <h3 id="modalSubject">—</h3>
+    <div class="mmeta" id="modalMeta">—</div>
+    <div class="tag-group"><label>Firma</label><div id="firmaGroup"></div></div>
+    <div class="tag-group"><label>Typ</label><div id="typGroup"></div></div>
+    <div class="tag-group"><label>Task</label><div id="taskGroup"></div></div>
+    <div id="bodyPreview" style="display:none;margin:8px 0;padding:6px;background:var(--bg);border-radius:4px;font-size:9px;color:var(--muted);max-height:60px;overflow:hidden;font-family:'JetBrains Mono',monospace;"></div>
+    <div class="modal-actions">
+      <button class="btn-close" onclick="closeModal()">Zavřít</button>
+      <button id="btnUnsub" style="display:none;background:#0d2233;color:#79c0ff;border:none;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:10px;font-weight:700;" onclick="doUnsubscribe()">⊗ Odhlásit + nikdy více</button>
+      <button class="btn-spam" onclick="saveEmail(true)">🗑 SPAM</button>
+      <button class="btn-save" onclick="saveEmail(false)">💾 Uložit tagy</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ── Notes & Calendar preview ── */
+const NOTES_DATA = [
+  {% for n in db.notes_recent %}
+  { title: {{ n.name|tojson }}, body: {{ (n.body or '')|tojson }}, modified: {{ (n.modified_at.strftime('%d.%m.%Y %H:%M') if n.modified_at else '—')|tojson }} }{{ ',' if not loop.last }}
+  {% endfor %}
+];
+const CAL_DATA = [
+  {% for e in db.calendar_upcoming %}
+  { title: {{ (e.summary or '—')|tojson }}, calendar: {{ (e.calendar or '—')|tojson }}, start: {{ (e.start_at.strftime('%d.%m.%Y %H:%M') if e.start_at else '—')|tojson }}, end: {{ (e.end_at.strftime('%d.%m.%Y %H:%M') if e.end_at else '—')|tojson }}, location: {{ (e.location or '')|tojson }}, all_day: {{ 'true' if e.all_day else 'false' }} }{{ ',' if not loop.last }}
+  {% endfor %}
+];
+
+function openNotePreview(i) {
+  const n = NOTES_DATA[i]; if (!n) return;
+  document.getElementById('noteModalTitle').textContent = n.title;
+  document.getElementById('noteModalMeta').textContent = 'Upraveno: ' + n.modified;
+  document.getElementById('noteModalBody').textContent = n.body || '(prázdná poznámka)';
+  document.getElementById('noteModal').classList.add('open');
+}
+function closeNoteModal() { document.getElementById('noteModal').classList.remove('open'); }
+
+function openCalPreview(i) {
+  const e = CAL_DATA[i]; if (!e) return;
+  document.getElementById('calModalTitle').textContent = e.title;
+  let html = `<b>Začátek:</b> ${e.start}${e.all_day ? ' (celý den)' : ''}<br>`;
+  if (e.end && e.end !== e.start) html += `<b>Konec:</b> ${e.end}<br>`;
+  html += `<b>Kalendář:</b> ${e.calendar}<br>`;
+  if (e.location) html += `<b>Místo:</b> ${e.location}`;
+  document.getElementById('calModalBody').innerHTML = html;
+  document.getElementById('calModal').classList.add('open');
+}
+function closeCalModal() { document.getElementById('calModal').classList.remove('open'); }
+
+/* ── Email log filters ── */
+let _efFirma='', _efTyp='', _efTask='';
+
+function _chipGroup(groupId, val){
+  document.querySelectorAll(`#${groupId} .ef-chip`).forEach(c=>{
+    c.classList.toggle('on', c.dataset.val===val);
+    if(c.dataset.val==='' && c.classList.contains('all')) c.classList.toggle('on', val==='');
+  });
+}
+document.addEventListener('DOMContentLoaded',()=>{
+  ['efFirma','efTyp','efTask'].forEach(gid=>{
+    document.getElementById(gid)?.querySelectorAll('.ef-chip').forEach(c=>{
+      c.addEventListener('click',()=>{
+        const val = c.dataset.val;
+        if(gid==='efFirma') _efFirma=val;
+        else if(gid==='efTyp') _efTyp=val;
+        else _efTask=val;
+        _chipGroup(gid, val);
+        efFilter();
+      });
+    });
+  });
+  efFilter();
+});
+
+function efFilter(){
+  const q = (document.getElementById('efSearch')?.value||'').toLowerCase().trim();
+  const rows = document.querySelectorAll('#emailTable tbody tr, #emailTable tr[data-firma]');
+  let vis=0;
+  rows.forEach(r=>{
+    if(!r.dataset) return;
+    const firma = r.dataset.firma||'';
+    const typ   = r.dataset.typ||'';
+    const task  = r.dataset.task||'';
+    const okFirma = !_efFirma || (_efFirma==='__none__' ? firma==='' : firma===_efFirma);
+    const okTyp   = !_efTyp   || typ===_efTyp;
+    const okTask  = !_efTask  || task===_efTask;
+    const okQ     = !q || (r.dataset.from||'').includes(q) || (r.dataset.subject||'').includes(q);
+    const ok = okFirma && okTyp && okTask && okQ;
+    r.style.display = ok ? '' : 'none';
+    if(ok) vis++;
+  });
+  const el=document.getElementById('emailCount');
+  if(el) el.textContent='('+vis+')';
+}
+
+/* ── Email modal ── */
+const FIRMA_OPTS = ['DXPSOLUTIONS','MBANK','ZAMECNICTVI','PRIVATE'];
+const TYP_OPTS   = ['SPAM','NABÍDKA','ÚKOL','INFO','FAKTURA','POTVRZENÍ','NEWSLETTER','NOTIFIKACE','ESHOP'];
+const TASK_OPTS  = ['ČEKÁ-NA-MĚ','ČEKÁ-NA-ODPOVĚĎ','→OF','→REM','HOTOVO','—'];
+let _emailId = null, _sel = {firma:null,typ:null,task:null}, _unsubUrl = null;
+
+function makeButtons(groupId, options, key) {
+  const g = document.getElementById(groupId); g.innerHTML = '';
+  options.forEach(o => {
+    const b = document.createElement('span');
+    b.className = 'tag-btn'; b.textContent = o==='—'?'(žádný)':o; b.dataset.val = o==='—'?'':o;
+    b.onclick = () => { g.querySelectorAll('.tag-btn').forEach(x=>x.classList.remove('active')); b.classList.add('active'); _sel[key]=b.dataset.val||null; };
+    g.appendChild(b);
+  });
+}
+function setActive(gid, val) { document.querySelectorAll(`#${gid} .tag-btn`).forEach(b=>b.classList.toggle('active',b.dataset.val===(val||''))); }
+
+async function openEmailModal(id) {
+  _emailId = id;
+  const r = await fetch(`/api/email/${id}`); if (!r.ok) return;
+  const d = await r.json();
+  document.getElementById('modalSubject').textContent = d.subject||'(bez předmětu)';
+  document.getElementById('modalMeta').textContent = `Od: ${d.from_address||'—'} · ${d.sent_at?d.sent_at.substring(0,16).replace('T',' '):'—'}${d.confidence!=null?' · AI: '+Math.round(d.confidence*100)+'%':''}${d.human_reviewed?' · ✏️':''}`;
+  makeButtons('firmaGroup',FIRMA_OPTS,'firma'); makeButtons('typGroup',TYP_OPTS,'typ'); makeButtons('taskGroup',TASK_OPTS,'task');
+  _sel={firma:d.firma,typ:d.typ,task:d.task_status}; _unsubUrl=d.unsubscribe_url||null;
+  setActive('firmaGroup',d.firma); setActive('typGroup',d.typ); setActive('taskGroup',d.task_status);
+  document.getElementById('btnUnsub').style.display=_unsubUrl?'inline-block':'none';
+  const prev=document.getElementById('bodyPreview');
+  if(d.body_preview){prev.textContent=d.body_preview;prev.style.display='block';}else{prev.style.display='none';}
+  document.getElementById('emailModal').classList.add('open');
+}
+function closeModal(){document.getElementById('emailModal').classList.remove('open');_emailId=null;}
+async function doUnsubscribe(){if(!_unsubUrl||!_emailId)return;window.open(_unsubUrl,'_blank');await fetch(`/api/email/${_emailId}/unsubscribe`,{method:'POST'});closeModal();location.reload();}
+async function saveEmail(markSpam){
+  if(!_emailId)return;
+  const body=markSpam?{is_spam:true}:{firma:_sel.firma,typ:_sel.typ,task_status:_sel.task};
+  await fetch(`/api/email/${_emailId}/tags`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  closeModal();location.reload();
+}
+</script>
+{% endblock %}

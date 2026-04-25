@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Pravidla{% endblock %}
+{% block refresh %}300{% endblock %}
+{% block nav_pravidla %}active{% endblock %}
+
+{% block extra_style %}
+.filter-bar { display:flex; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
+.filter-bar select, .filter-bar input {
+  background:var(--bg); border:1px solid var(--border2); color:var(--text);
+  padding:3px 8px; border-radius:4px; font-size:10px; font-family:'JetBrains Mono',monospace;
+  outline:none; transition:.12s;
+}
+.filter-bar select:focus, .filter-bar input:focus { border-color:var(--primary-d); }
+.filter-bar input { width:200px; }
+.fcount { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--muted); margin-left:4px; }
+.rule-type { font-size:9px; text-transform:uppercase; letter-spacing:.06em; }
+.rule-firma  { color:var(--blue); }
+.rule-typ    { color:var(--orange); }
+.rule-spam   { color:var(--red); }
+.rule-task   { color:var(--yellow); }
+.hit-bar { display:inline-block; height:6px; background:var(--primary-d); border-radius:2px; vertical-align:middle; }
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h2>Klasifikační pravidla</h2>
+
+  <div class="filter-bar">
+    <select id="fType" onchange="applyFilters()">
+      <option value="">Všechny typy</option>
+      <option value="firma">firma</option>
+      <option value="typ">typ</option>
+      <option value="spam">spam</option>
+      <option value="task">task</option>
+    </select>
+    <select id="fResult" onchange="applyFilters()">
+      <option value="">Všechny výsledky</option>
+    </select>
+    <input id="fSearch" type="text" placeholder="Hledat hodnotu…" oninput="applyFilters()">
+    <span class="fcount" id="fCount">{{ rules|length }} pravidel</span>
+  </div>
+
+  {% if rules %}
+  <table id="rulesTable">
+    <thead>
+      <tr>
+        <th style="width:70px">Typ</th>
+        <th style="width:90px">Pole</th>
+        <th>Hodnota</th>
+        <th style="width:90px">Výsledek</th>
+        <th class="num" style="width:50px">Shody</th>
+        <th style="width:130px">Aktualizováno</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in rules %}
+    <tr data-rtype="{{ r.rule_type }}" data-rresult="{{ r.result_value or '' }}" data-rval="{{ r.match_value or '' }}">
+      <td><span class="rule-type rule-{{ r.rule_type }}">{{ r.rule_type }}</span></td>
+      <td class="mono">{{ r.match_field }}</td>
+      <td class="mono" style="max-width:280px">{{ r.match_value }}</td>
+      <td>
+        {% if r.rule_type == 'firma' %}
+          {% set fk = r.result_value|lower|replace('dxpsolutions','dxp')|replace('zamecnictvi','zamek')|replace('private','priv') %}
+          <span class="badge f-{{ fk }}">{{ r.result_value }}</span>
+        {% elif r.rule_type == 'typ' %}
+          {% set tk = {'ÚKOL':'t-ukol','FAKTURA':'t-fakt','INFO':'t-info','NEWSLETTER':'t-nl','NOTIFIKACE':'t-notif','NABÍDKA':'t-nabid','POTVRZENÍ':'t-potv','ESHOP':'t-nabid','SPAM':'fail'} %}
+          <span class="badge {{ tk.get(r.result_value, 't-info') }}">{{ r.result_value }}</span>
+        {% elif r.rule_type == 'spam' %}
+          <span class="badge fail">SPAM</span>
+        {% else %}
+          <span class="badge pending">{{ r.result_value }}</span>
+        {% endif %}
+      </td>
+      <td class="num">
+        {{ r.hit_count or 0 }}
+        <span class="hit-bar" style="width:{{ [[((r.hit_count or 0) / 20 * 40)|int, 40]|min, 2]|max }}px; margin-left:4px"></span>
+      </td>
+      <td class="mono" style="color:var(--muted)">
+        {% if r.updated_at %}{{ r.updated_at.strftime('%Y-%m-%d %H:%M') }}{% else %}—{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">Žádná pravidla zatím nejsou. Vytvoří se automaticky při taggování emailů.</p>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+  const rows = Array.from(document.querySelectorAll('#rulesTable tbody tr'));
+  const results = [...new Set(rows.map(r => r.dataset.rresult).filter(Boolean))].sort();
+  const sel = document.getElementById('fResult');
+  results.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
+})();
+
+function applyFilters(){
+  const fType   = document.getElementById('fType').value;
+  const fResult = document.getElementById('fResult').value;
+  const fSearch = document.getElementById('fSearch').value.toLowerCase().trim();
+  const rows = document.querySelectorAll('#rulesTable tbody tr');
+  let vis = 0;
+  rows.forEach(r => {
+    const ok =
+      (!fType   || r.dataset.rtype   === fType) &&
+      (!fResult || r.dataset.rresult === fResult) &&
+      (!fSearch || r.dataset.rval.toLowerCase().includes(fSearch));
+    r.style.display = ok ? '' : 'none';
+    if(ok) vis++;
+  });
+  document.getElementById('fCount').textContent = vis + ' pravidel';
+}
+</script>
+{% endblock %}

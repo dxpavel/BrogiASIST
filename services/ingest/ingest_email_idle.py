@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 from imapclient import IMAPClient
 from dotenv import load_dotenv
 from ingest_email import ACCOUNTS, fetch_messages, upsert_messages
+from imap_status import set_idle_state, set_idle_push
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
 
@@ -47,13 +48,12 @@ def run_idle_loop(account: dict):
 
             client.idle()
             log.info(f"[{name}] IDLE aktivní")
+            set_idle_state(name, "active")
 
             while True:
-                # Čekej na push notifikaci, max IDLE_TIMEOUT sekund
                 responses = client.idle_check(timeout=IDLE_TIMEOUT)
 
                 if responses:
-                    # Přišel EXISTS nebo jiný signál → fetch nových
                     has_new = any(
                         b"EXISTS" in str(r).encode() or (isinstance(r, tuple) and r[1] == b"EXISTS")
                         for r in responses
@@ -65,6 +65,9 @@ def run_idle_loop(account: dict):
                         new_c, _ = upsert_messages(msgs)
                         if new_c:
                             log.info(f"[{name}] PUSH: +{new_c} nových zpráv")
+                            set_idle_push(name)
+                        else:
+                            set_idle_state(name, "active")
                         client.idle()
                 else:
                     # Timeout → reconnect (IDLE max 29 min per RFC)
@@ -75,12 +78,17 @@ def run_idle_loop(account: dict):
 
         except Exception as e:
             log.error(f"[{name}] Chyba: {e} — reconnect za 30s")
+            set_idle_state(name, "reconnecting")
             time.sleep(30)
 
 
 def start_all():
     threads = []
     for account in ACCOUNTS:
+        if not account.get("supports_idle", True):
+            log.info(f"[{account['name']}] IDLE nepodporováno — přeskočeno (záloha: 30min scan)")
+            set_idle_state(account["name"], "no_idle")
+            continue
         t = threading.Thread(
             target=run_idle_loop,
             args=(account,),

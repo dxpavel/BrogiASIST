@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Obsah{% endblock %}
+{% block refresh %}3600{% endblock %}
+{% block nav_obsah %}active{% endblock %}
+
+{% block extra_style %}
+.obsah-grid { display: flex; flex-direction: column; gap: 12px; }
+
+.topic-block { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+
+.topic-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+              background: var(--surface-2); cursor: pointer; user-select: none; }
+.topic-head:hover { background: var(--surface-3); }
+.topic-title { font-size: 11px; font-weight: 700; font-family: var(--font-mono);
+               text-transform: uppercase; letter-spacing: .06em; color: var(--accent); flex: 1; }
+.topic-count { font-size: 9px; font-family: var(--font-mono); color: var(--text-muted);
+               background: var(--accent-dim); padding: 1px 6px; border-radius: 8px; }
+.toggle-icon { font-size: 10px; color: var(--text-dim); transition: transform .15s; }
+.topic-body { border-top: 1px solid var(--border); }
+.topic-body.collapsed { display: none; }
+
+.subtopic-block { border-top: 1px solid var(--border); }
+.subtopic-head { display: flex; align-items: center; gap: 8px; padding: 6px 12px 6px 28px;
+                 background: var(--surface); cursor: pointer; user-select: none; }
+.subtopic-head:hover { background: var(--surface-2); }
+.subtopic-arrow { color: var(--text-dim); font-size: 10px; }
+.subtopic-title { font-size: 10px; font-weight: 600; font-family: var(--font-mono);
+                  text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); flex: 1; }
+.subtopic-body { border-top: 1px solid var(--border); }
+.subtopic-body.collapsed { display: none; }
+
+.vid-table { width: 100%; border-collapse: collapse; }
+.vid-table tr { border-bottom: 1px solid var(--border); }
+.vid-table tr:last-child { border-bottom: none; }
+.vid-table tr:hover { background: var(--surface-2); }
+.vid-table td { padding: 5px 12px; font-size: 11px; vertical-align: middle; }
+.vid-score { width: 32px; text-align: center; font-family: var(--font-mono);
+             font-size: 10px; font-weight: 700; color: var(--accent); }
+.vid-channel { width: 150px; color: var(--text-muted); font-family: var(--font-mono); font-size: 10px; }
+.vid-date { width: 72px; color: var(--text-dim); font-family: var(--font-mono); font-size: 9px; text-align: right; }
+.vid-link { width: 44px; text-align: center; }
+.vid-link a { font-family: var(--font-mono); font-size: 11px; font-weight: 700;
+              color: var(--accent); text-decoration: none; padding: 3px 7px;
+              border: 1px solid var(--accent); border-radius: 3px;
+              background: var(--accent-dim); opacity: .85; }
+.vid-link a:hover { opacity: 1; background: rgba(90,158,111,.25); }
+{% endblock %}
+
+{% macro vid_rows(videos) %}
+{% if videos %}
+<table class="vid-table">
+  {% for v in videos %}
+  <tr>
+    <td class="vid-score">{{ v.score }}</td>
+    <td class="vid-channel">{{ v.channel }}</td>
+    <td>{{ v.title }}</td>
+    <td class="vid-date">{% if v.published_at %}{{ v.published_at.strftime('%d.%m.%y') }}{% endif %}</td>
+    <td class="vid-link">{% if v.url %}<a href="{{ v.url }}" target="_blank">▶ link</a>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endmacro %}
+
+{% block content %}
+<div class="obsah-grid">
+  {% if not topics %}
+  <div class="card"><p class="empty">Žádné shody — přidej signály v Admin.</p></div>
+  {% endif %}
+
+  {% for t in topics %}
+  <div class="topic-block">
+    <div class="topic-head" onclick="toggleBlock(this)">
+      <span class="topic-title">{{ t.name }}</span>
+      {% if t.total > 0 %}<span class="topic-count">{{ t.total }} videí</span>{% endif %}
+      <span class="toggle-icon">▾</span>
+    </div>
+    <div class="topic-body">
+      {{ vid_rows(t.videos) }}
+
+      {% for c in t.children %}
+      {% if c.total > 0 %}
+      <div class="subtopic-block">
+        <div class="subtopic-head" onclick="toggleSub(this)">
+          <span class="subtopic-arrow">└</span>
+          <span class="subtopic-title">{{ c.name }}</span>
+          <span class="topic-count">{{ c.total }} videí</span>
+          <span class="toggle-icon">▾</span>
+        </div>
+        <div class="subtopic-body">
+          {{ vid_rows(c.videos) }}
+        </div>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleBlock(head) {
+  const body = head.nextElementSibling;
+  const icon = head.querySelector('.toggle-icon');
+  const collapsed = body.classList.toggle('collapsed');
+  icon.style.transform = collapsed ? 'rotate(-90deg)' : '';
+}
+function toggleSub(head) {
+  const body = head.nextElementSibling;
+  const icon = head.querySelector('.toggle-icon');
+  const collapsed = body.classList.toggle('collapsed');
+  icon.style.transform = collapsed ? 'rotate(-90deg)' : '';
+}
+</script>
+{% endblock %}
