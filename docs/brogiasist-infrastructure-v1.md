@@ -1,13 +1,13 @@
 ---
-Název: Infrastruktura BrogiMatAssistance
-Soubor: docs/brogimat-assistance-infrastructure-v1.md
-Verze: 2.1
-Poslední aktualizace: 2026-04-22
+Název: Infrastruktura BrogiASIST
+Soubor: docs/brogiasist-infrastructure-v1.md
+Verze: 2.2
+Poslední aktualizace: 2026-04-25
 Popis: Stack, servery, porty, sítě, DEV/PROD architektura, databázový stack
-Změněno v: 2026-04-22 — přidán databázový stack (PG + ChromaDB), upřesněn PROD server
+Změněno v: 2026-04-25 — upřesněn ChromaDB účel (action learning), přidány Docker compose porty BrogiASIST stacku
 ---
 
-# Infrastruktura — BrogiMatAssistance
+# Infrastruktura — BrogiASIST
 
 ---
 
@@ -63,26 +63,40 @@ zajišťuje že LaunchAgent vidí node při spuštění bez loginshell.
 
 ## Databázový stack
 
-### DEV (localhost)
-| Služba | Nasazení | Poznámka |
+### DEV (localhost — Docker compose)
+
+| Služba | Container | Image | Port (host:container) | Účel |
+|---|---|---|---|---|
+| PostgreSQL | `brogi_postgres` | `postgres:16` | 5433:5432 | Mirror tables, klasifikace, system tabulky |
+| ChromaDB | `brogi_chromadb` | `chromadb/chroma` | 8000:8000 | Action learning (collection `email_actions`) |
+| Dashboard | `brogi_dashboard` | FastAPI build | 9000:9000 | WebUI |
+| Scheduler | `brogi_scheduler` | FastAPI build | 9001:9001 | Ingest + IMAP IDLE + TG callback + ingest API |
+
+| Externí služba | Kde běží | URL z kontejneru |
 |---|---|---|
-| PostgreSQL | Docker (lokální) | Staví se od nuly |
-| ChromaDB | Docker (lokální) | Pavel má instanci i jinde |
-| Přílohy | lokální disk | Cesta v DB konfiguraci |
+| Apple Bridge | macOS host (launchd) | `http://host.docker.internal:9100` |
+| Ollama (Llama3.2 + nomic-embed-text) | macOS host | `http://host.docker.internal:11434` |
+
+⚠️ **Účel ChromaDB v BrogiASIST**: ne semantic search nad maily, ale **action log + pattern matching pro auto-akce** (`find_repeat_action` před TG notifikací). Plnou semantic search je možné dostavět nad stejnou collection.
+
+⚠️ **`actions` tabulka v PostgreSQL** je rezervovaná pro budoucí confirmation workflow — kód do ní nezapisuje, action log běží přes ChromaDB.
 
 ### PROD (BrogiServer)
 | Služba | Nasazení | Poznámka |
 |---|---|---|
 | PostgreSQL | Docker | Konfiguruje se až na PROD |
 | ChromaDB | Docker | Konfiguruje se až na PROD |
+| Apple Bridge | macOS host (launchd) | Stejný launchd plist jako DEV; vyžaduje Full Disk Access pro Calendar |
 | Přílohy | připojený Synology mount | Cesta v DB konfiguraci |
 
 ### Schema migrace
-- Verzované v **GitHub repu** (raw SQL soubory)
-- Migration tool: TBD (raw SQL / Alembic / Flyway — rozhodnutí před první migrací)
+- Raw SQL v `sql/` (`001_init.sql` … `010_imap_status.sql`)
+- Verzované v **GitHub repu**
+- Migration tool: zatím manuální `psql -f sql/NNN_*.sql` — Alembic/Flyway TBD
 
 ### Zálohy
 - TBD — řeší se při konfiguraci PROD
+- DEV: backup procedura per `GLOBAL-SKILL.md §11` (`pg_dump → backup/snapshots/YYYYMMDD/`)
 
 ---
 

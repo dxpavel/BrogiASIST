@@ -1,58 +1,58 @@
 ---
 Název: DOC-MAP
 Soubor: docs/DOC-MAP.md
-Verze: 2.0
-Poslední aktualizace: 2026-04-06
-Popis: Centrální katalog dokumentace
-Změněno v: Aktualizace po první implementaci 2026-04-06
+Verze: 4.1
+Poslední aktualizace: 2026-04-25
 ---
 
-# DOC-MAP — BrogiMatAssistance
+# DOC-MAP — BrogiASIST
 
 ---
 
-## docs/
+## Číst na začátku každé session
 
-| Soubor | Verze | Datum | Popis | Stav |
-|---|---|---|---|---|
-| DOC-MAP.md | 2.0 | 2026-04-06 | Centrální katalog | ✅ |
-| CONTEXT-NEW-CHAT.md | 2.0 | 2026-04-06 | Stav projektu, cesty, problémy | ✅ |
-| LESSONS-LEARNED.md | 2.0 | 2026-04-06 | Poučení z praxe (10 lekcí) | ✅ |
-| BROGI-START.md | 1.0 | 2026-03-26 | Startovní procedura session | ⏳ aktualizovat |
-| BROGI-END.md | 1.0 | 2026-03-26 | Ukončovací procedura session | ⏳ aktualizovat |
+| Soubor | Popis | Stav |
+|---|---|---|
+| `CONTEXT-NEW-CHAT.md` | Aktuální stav, cesty, co běží, co chybí | ✅ 2026-04-25 |
+| `brogiasist-architecture-v1.md` | Stack, services, endpointy, DB schéma, dataflow, IMAP akce | ✅ 2026-04-25 |
+| `brogiasist-lessons-learned-v1.md` | Poučení z praxe — IMAP, JXA, Docker, action logging | ✅ 2026-04-25 |
 
-## Standardní dokumentace
+---
 
-| Soubor | Verze | Datum | Popis | Stav |
-|---|---|---|---|---|
-| brogimat-assistance-system-popis-v1.md | 2.0 | 2026-04-06 | Architektura, dataflow, nástroje | ✅ |
-| brogimat-assistance-infrastructure-v1.md | 2.0 | 2026-04-06 | Stroje, porty, sítě, testy | ✅ |
-| brogimat-assistance-api-reference-v1.md | 2.0 | 2026-04-06 | Webhook endpointy, příklady | ✅ |
-| brogimat-assistance-workflows-v1.md | 2.0 | 2026-04-06 | Automatizace, rutiny, plán | ✅ |
-| brogimat-assistance-credentials-v1.md | 2.0 | 2026-04-06 | Přístupy, klíče, porty | ✅ |
-| brogimat-assistance-data-process-dictionary-v1.md | 1.0 | 2026-03-26 | DB schéma (prázdné) | ⏳ |
-| brogimat-assistance-design-system-v1.md | 1.0 | 2026-03-26 | UI (prázdné) | ⏳ |
-| brogimat-assistance-webui-spec-v1.md | 1.0 | 2026-03-26 | WebUI spec (prázdné) | ⏳ |
+## Referenční dokumentace
 
-## docs/modules/
-(prázdné — doplnit při vzniku modulů)
+| Soubor | Popis | Stav |
+|---|---|---|
+| `brogiasist-data-dictionary-v1.md` | Datový model, DB tabulky, procesní tok, AI vrstvy | ✅ 2026-04-23 |
+| `brogiasist-api-reference-v1.md` | Webhook server endpointy, příklady | ✅ 2026-04-06 |
+| `brogiasist-infrastructure-v1.md` | Stroje, porty, sítě, Docker, Apple Bridge | ✅ 2026-04-22 |
+| `brogiasist-credentials-v1.md` | Přístupy, API klíče, hesla (nečíst zbytečně) | ✅ 2026-04-22 |
+| `brogiasist-workflows-v1.md` | Automatizace, rutiny | ⏳ neaktuální |
+| `brogiasist-feature-plan-v1.md` | Původní plán 9 modulů (historický) | ⏳ archiv |
 
-## Root soubory
+---
 
-| Soubor | Verze | Datum | Popis |
-|---|---|---|---|
-| GLOBAL-SKILL.md | 1.0 | 2026-03-26 | Pravidla projektu |
-| BROGI-START.md | 1.0 | 2026-03-26 | Startovní procedura |
-| BROGI-END.md | 1.0 | 2026-03-26 | Ukončovací procedura |
-| .env.example | 1.0 | 2026-03-26 | Šablona env proměnných |
+## Session procedury
 
-## Soubory na Mac Studiu (mimo SynologyDrive)
+| Soubor | Popis |
+|---|---|
+| `CONTEXT-NEW-CHAT.md` | Stav projektu — aktualizovat na konci session |
+
+---
+
+## Soubory mimo docs/
 
 | Cesta | Popis |
 |---|---|
-| /Users/dxpavel/brogi-webhook/server_v2.py | Webhook server (Python) |
-| /Users/dxpavel/brogi-webhook/run-claude.sh | Wrapper pro Claude Code |
-| /Users/dxpavel/brogi-webhook/CLAUDE.md | Kontext pro Claude Code |
-| /Users/dxpavel/brogi-webhook/server.log | Provozní log |
-| /Users/dxpavel/Library/LaunchAgents/com.brogimat.webhook.plist | Autostart |
-| brogimat-assistance-feature-plan-v1.md | 1.0 | 2026-04-07 | Kompletní plán funkcí před implementací | ✅ |
+| `services/dashboard/` | FastAPI dashboard + Jinja2 templates |
+| `services/ingest/` | Scheduler, IMAP, Telegram, klasifikace |
+| `services/apple-bridge/` | FastAPI bridge pro Apple API (host, port 9100) |
+| `sql/` | SQL migrace 001–009 |
+| `.env` | Environment proměnné |
+| `~/Library/LaunchAgents/cz.brogiasist.apple-bridge.plist` | Autostart Apple Bridge |
+
+---
+
+## Archiv
+
+Soubory v `docs/_archive/` — neaktuální nebo jiný projekt (WordPress).

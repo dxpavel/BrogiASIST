@@ -1,0 +1,443 @@
+# BrogiASIST — Lessons Learned v1
+
+> Jazyk: česky. Určeno pro budoucí vývojáře nebo AI asistenty, kteří na projektu pracují.
+> Stav: 2026-04-25. Aktualizuj při každém novém zjištění.
+
+---
+
+## 1. IMAP — rozdíly mezi providery
+
+### iCloud (dxpavel@me.com)
+- `fetch_cmd` musí být **`BODY[]`**, ne `RFC822`.
+- `RFC822` vrací prázdné `b'59 ()'` — žádná data, žádná chybová hláška, tiché selhání.
+- App-specific password povinný (viz sekce 15).
+- **Trash folder**: `Deleted Messages` (s mezerou — viz sekce 16 o quoting).
+- **STORE flag**: musí být `(\\Seen)` s závorkami, ne `\\Seen` holý — viz sekce 16.
+- **SEARCH HEADER**: používej `m.uid('SEARCH', None, 'HEADER', 'Message-ID', mid)` (separate args), ne string form `f'HEADER Message-ID "{mid}"'` — string form způsobuje `BAD Parse Error` na iCloud.
+
+### Forpsi (brogi@, servicedesk@, support@, pavel@, postapro@)
+- Správné nastavení: **port 143 + STARTTLS**.
+- Port 993 SSL na Forpsi **nefunguje** — spojení selže nebo visí.
+- **Trash folder**: `INBOX.Trash` (ne `Trash`!) — separator je `.`, vše pod `INBOX.` prefixem.
+- **Folder separator**: `.` (tečka), ne `/` (lomítko). Složky jsou `INBOX.subfolder`, ne `subfolder`.
+- **BrogiASIST složky**: na Forpsi není BrogiASIST hierarchie — pokud ji chceš, musíš použít `INBOX.BrogiASIST.HOTOVO` apod.
+
+### Synology (mail.dxpsolutions.cz — pavel@, support@, brogi@)
+- **Trash folder**: `Trash`.
+- Separator: `.` (tečka).
+- **SEARCH HEADER**: vrací `OK [b'']` (prázdné) i pro platná Message-IDs — pravděpodobně nepodporuje HEADER search. Použij UID přístup nebo ruční fetch+porovnání.
+
+### Seznam (padre@seznam.cz)
+- **Nepodporuje IMAP IDLE**.
+- Řešení: graceful fallback — reconnect každých 30 sekund, při každém reconnectu fetch nových zpráv.
+- Nepoužívej blocking IDLE smyčku pro tento účet.
+
+### Gmail (dxpavel@gmail.com, zamecnictvi@gmail.com)
+- **Trash folder**: `[Gmail]/Trash`.
+- UIDs jsou per-folder — UID v INBOX se liší od UID v `[Gmail]/All Mail`.
+- Starší emaily (přesunuté Gmailem do Promotions/Social) nemusejí být dostupné přes INBOX UID.
+- Pro hledání přes Message-ID zahrň do seznamu: `["INBOX", "[Gmail]/All Mail", "[Gmail]/Promotions"]`.
+- Složky s lomítkem (`[Gmail]/All Mail`) potřebují při `m.select()` uvozovky: `m.select('"[Gmail]/All Mail"')`.
+
+### imapclient UID decode
+- `uid` vrácené z `fetch()` může být `bytes`, ne `int`.
+- Vždy normalizuj: `int(uid.decode() if isinstance(uid, bytes) else uid)`
+- Bez toho padá porovnání nebo DB insert.
+
+---
+
+## 2. OmniFocus JXA — výkonnostní problémy
+
+### `taskStatus()` enum — nelze JSON serializovat
+- `t.taskStatus()` vrací OmniFocus enumeration type, který Python/JSON nezná.
+- Error: `"Can't convert types. (-1700)"`.
+- Řešení: status počítej ručně:
+  ```javascript
+  const completed = t.completed();
+  const due = t.dueDate();
+  const now = new Date();
+  // overdue = due && !completed && due < now
+  ```
+
+### Per-item property access — extrémně pomalý
+- Volání `t.name()`, `t.flagged()`, `t.dueDate()` zvlášť pro každý task = Apple Event pro každý atribut.
+- Naměřeno: **~29 sekund pro 462 tasků**.
+- Nepoužívej v produkci.
+
+### Bulk array fetch — správný přístup
+- `doc.flattenedTasks.whose({completed:false}).name()` vrátí pole všech hodnot v jednom Apple Events volání.
+- Fetch celou skupinu: `.name()`, `.flagged()`, `.dueDate()`, `.note()` — každý atribut jedním voláním přes celou kolekci.
+- Výrazně rychlejší než per-item.
+
+### Rekurzivní iterace přes projekty — zastaralý přístup
+- Starý pattern `doc.flattenedProjects()` → `container.tasks()` rekurzivně je pomalý a zbytečně složitý.
+- Správný přístup: **`doc.flattenedTasks.whose({completed:false})`** — vrátí přímo všechny nekompletní tasky.
+
+### JXA timeout
+- Výchozí timeout 30s nestačí pro větší databáze (1000+ tasků).
+- Nastav timeout na **90 sekund** (`osascript` argument nebo subprocess timeout).
+
+### `containingProject()` — vynech pokud nepotřebuješ
+- Per-task lookup projektu přes `containingProject()` je pomalý.
+- Vynech z výchozího fetch cyklu; přidej pouze pokud je explicitně potřeba.
+
+---
+
+## 3. JXA Calendar — kompletně visí
+
+- Calendar JXA v jakékoliv podobě **visí** (testováno na macOS 26.x).
+- Calendar.app nereaguje na JXA scripting — žádná chyba, jen timeout.
+- **Řešení: použij AppleScript místo JXA.**
+
+### AppleScript — funkční, ale pomalý pro velké kalendáře
+- `osascript -e 'tell application "Calendar" to ...'` funguje.
+- Problém: `whose start date >= X and start date <= Y` je pomalý pro velké kalendáře.
+- Garmin Connect, Siri Suggestions a podobné mají tisíce eventů — bez filtrace timeout.
+
+### Řešení: filtruj seznam kalendářů
+- Na začátku načti seznam kalendářů a skip tyto:
+  - Garmin Connect
+  - Siri Suggestions
+  - Birthdays
+  - Scheduled Reminders
+  - České svátky (nebo jiné read-only feed kalendáře)
+- Zpracovávej pouze uživatelské kalendáře.
+
+### Timeout pro AppleScript Calendar
+- Nastav subprocess timeout na **120 sekund**.
+
+---
+
+## 4. Apple Contacts — JXA příliš pomalý
+
+### Co nefunguje
+- Per-item JXA (`p.firstName()`, `p.lastName()` atd.) pro 1177 kontaktů: **timeout >120s**.
+- `p.properties()` (všechno najednou per kontakt): stále timeout pro 1177 kontaktů.
+- `people.firstName()` bulk: `TypeError` — Contacts JXA **nepodporuje** array property access jako OmniFocus.
+
+### Řešení: přímé čtení sqlite databáze
+- Lokace iCloud kontaktů: `~/Library/Application Support/AddressBook/Sources/<UUID>/AddressBook-v22.abcddb`
+- Hlavní DB (`~/Library/Application Support/AddressBook/AddressBook-v22.abcddb`) obsahuje pouze lokální/základní kontakty — iCloud sync'd kontakty jsou v source subdirectory.
+- Rychlost: **1176 kontaktů za <0.05s**.
+
+### Core Data timestamp
+- Timestamps v AddressBook sqlite jsou **seconds since 2001-01-01** (ne Unix epoch 1970-01-01).
+- Konverze: `datetime(2001, 1, 1) + timedelta(seconds=ts)`
+
+---
+
+## 5. Apple sqlite databáze — lokace
+
+| Aplikace | Cesta | Tabulky / poznámky |
+|---|---|---|
+| iMessage | `~/Library/Messages/chat.db` | `message`, `handle`, `chat` |
+| Contacts (lokální) | `~/Library/Application Support/AddressBook/AddressBook-v22.abcddb` | jen lokální kontakty |
+| Contacts (iCloud) | `~/Library/Application Support/AddressBook/Sources/<UUID>/AddressBook-v22.abcddb` | sync'd kontakty — **toto použij** |
+| Calendar | `~/Library/Calendars/` | Full Disk Access required — bez něj `Operation not permitted` |
+
+> Poznámka: UUID v Contacts/Sources je unikátní per zařízení — nedá se hardcodovat. Vždy prohledej adresář Sources a najdi správnou DB (`os.listdir`).
+
+---
+
+## 6. ChromaDB v Docker
+
+- ChromaDB Docker image **nemá curl ani python** → standardní healthcheck (`curl http://localhost:8000`) selže při build.
+- Řešení: **odstraň `healthcheck` sekci** pro `chromadb` service v `docker-compose.yml`.
+- V `depends_on` u dalších services použij `condition: service_started` (ne `service_healthy`).
+
+```yaml
+# Špatně:
+chromadb:
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+
+# Správně:
+chromadb:
+  # bez healthcheck sekce
+  
+dashboard:
+  depends_on:
+    chromadb:
+      condition: service_started  # ne service_healthy
+```
+
+---
+
+## 7. Docker networking
+
+### host.docker.internal
+- Standardní hostname pro dosažení Mac hostu z Docker kontejneru.
+- Použití pro Apple Bridge: `http://host.docker.internal:9100`
+
+### PostgreSQL port conflict
+- Port 5432 na DEV může být obsazený lokálním PostgreSQL instalovaným na Macu.
+- Řešení: mapuj na jiný externí port v `docker-compose.yml`:
+  ```yaml
+  ports:
+    - "5433:5432"
+  ```
+- Uvnitř Docker sítě je port stále **5432**.
+- V env proměnných pro Docker services: `POSTGRES_PORT: 5432`
+- Pro lokální dev skripty (mimo Docker): port **5433**
+
+---
+
+## 8. APScheduler timezone
+
+- `datetime.now()` vrací **naive datetime** (bez timezone info).
+- APScheduler konfigurovaný s `timezone="Europe/Prague"` očekává timezone-aware datetimes pro `next_run_time`.
+- Mismatch způsobuje warning: `"Run time was missed by 2:00:00"` — job se spustí se zpožděním nebo přeskočí.
+- Řešení:
+  ```python
+  from datetime import datetime, timezone
+  scheduler.add_job(..., next_run_time=datetime.now(tz=timezone.utc))
+  ```
+
+---
+
+## 9. Python 3.14 — FastAPI kompatibilita
+
+- FastAPI `0.115.0` není kompatibilní s Python 3.14.
+- Error: `ImportError: cannot import name 'PYDANTIC_V2'`
+- Řešení — použij tyto verze (nebo vyšší):
+  ```
+  fastapi>=0.115.6
+  uvicorn>=0.34.0
+  ```
+
+---
+
+## 10. psycopg2-binary — verze na macOS ARM
+
+- `psycopg2-binary==2.9.10` není dostupný pro macOS ARM (Apple Silicon).
+- Řešení: downgrade na `psycopg2-binary==2.9.9`.
+
+---
+
+## 11. YouTube API — Python 3.9 type hints
+
+- Python 3.9 nepodporuje union type hint syntax `str | None` (tato syntax vyžaduje Python 3.10+).
+- Error při runtime nebo import.
+- Řešení: odstraň return type annotace nebo použij `Optional[str]` z `typing`:
+  ```python
+  from typing import Optional
+  def foo() -> Optional[str]:
+      ...
+  ```
+
+---
+
+## 12. RSS — The Old Reader API
+
+### User-Agent blokován
+- `ClientLogin` endpoint blokuje Python `urllib` default User-Agent (`python-urllib/3.x`).
+- Přidej header: `"User-Agent": "BrogiASIST/1.0"` ke všem requestům.
+
+### Správný endpoint pro stream
+- Správně: `GET /reader/api/0/stream/contents`
+- Špatně: `/reader/api/0/stream/contents/user/-/state/...` — různé varianty nefungují konzistentně.
+
+### Categories v response
+- `categories` v item response jsou **strings**, ne dict.
+- Správné čtení: `item.get("categories", [])` vrátí list stringů.
+
+---
+
+## 13. MantisBT — datum filter při prvním importu
+
+- Mantis issues mohou mít `date_submitted` nebo `last_updated` starší než aktuální filter window.
+- Při prvním importu scheduler filtruje jen posledních N hodin → starší issues se neimportují.
+- Řešení: první import spusť bez date filtru (flag `--full` nebo ekvivalent), pak scheduler filtruje normálně.
+
+---
+
+## 14. OmniFocus Bridge — launchd autostart
+
+- Apple Bridge musí běžet na Macu **mimo Docker** (Apple API přístup).
+- Autostart bez restartu systému: launchd LaunchAgent.
+
+### Soubor
+```
+~/Library/LaunchAgents/cz.brogiasist.apple-bridge.plist
+```
+
+### Klíčové parametry plist
+```xml
+<key>KeepAlive</key><true/>
+<key>RunAtLoad</key><true/>
+```
+
+### Aktivace bez restartu
+```bash
+launchctl load ~/Library/LaunchAgents/cz.brogiasist.apple-bridge.plist
+```
+
+### Restart / stop
+```bash
+launchctl unload ~/Library/LaunchAgents/cz.brogiasist.apple-bridge.plist
+launchctl load   ~/Library/LaunchAgents/cz.brogiasist.apple-bridge.plist
+```
+
+---
+
+## 15. iCloud IMAP — App-specific password
+
+- iCloud **vyžaduje** App-specific password — běžné iCloud heslo pro IMAP nefunguje.
+- Generování: [appleid.apple.com](https://appleid.apple.com) → Security → App-specific passwords.
+- Formát: `xxxx-xxxx-xxxx-xxxx` (4 skupiny po 4 znacích).
+- Heslo ulož do konfigurace / `.env`, nikdy do kódu.
+
+---
+
+---
+
+## 16. IMAP STORE flag — quoting a závorky
+
+### Problém: `BAD Parse Error` při STORE na iCloud
+- `m.uid("STORE", uid, "+FLAGS", "\\Seen")` **selže na iCloud** s `BAD Parse Error`.
+- Totéž se projeví i na jiných striktních serverech.
+- **Správně**: `m.uid("STORE", uid, "+FLAGS", "(\\Seen)")` — závorky kolem flag listu jsou povinné dle RFC, iCloud je vyžaduje.
+- Gmail toleruje obě formy, iCloud nikoliv.
+
+### Problém: `BAD Parse Error` při MOVE na folder s mezerou
+- `m.uid("MOVE", uid, "Deleted Messages")` — bez uvozovek selže s `BAD Parse Error`.
+- **Správně**: `m.uid("MOVE", uid, '"Deleted Messages"')` — embedded uvozovky v Python stringu.
+- Obecné pravidlo: každý název IMAP složky s mezerou musí být obalený uvozovkami:
+  ```python
+  def _imap_folder(name: str) -> str:
+      if " " in name and not name.startswith('"'):
+          return f'"{name}"'
+      return name
+  ```
+- Toto platí pro MOVE, COPY i SELECT.
+
+### Stav v kódu
+- `imap_actions.py`: funkce `_imap_folder()` použita v `_uid_move()` a `mark_read()`.
+- `backfill_spam_read.py`: stejná funkce.
+
+---
+
+## 17. IMAP — hledání emailů přes Message-ID vs UID
+
+### Kdy použít UID (imap_uid z DB)
+- Rychlé, spolehlivé — pokud email nebyl přesunut.
+- Selže pokud: email byl přesunut jinam (UID v INBOX se liší od UID po přesunu).
+- Gmail: UID je per-label (INBOX UID ≠ All Mail UID ≠ Promotions UID).
+- Strategie: zkus UID v uloženém folderu, fallback na Message-ID search.
+
+### Kdy použít Message-ID (source_id z DB)
+- Spolehlivé přes přesuny — Message-ID se nemění.
+- Pomalejší (server musí skenovat hlavičky).
+- Nutné pokud email byl přesunut z INBOX (jiná UID).
+- **Správné volání na iCloud**: `m.uid('SEARCH', None, 'HEADER', 'Message-ID', mid)` (separate args).
+- **Nepoužívej** string form: `m.uid('SEARCH', None, f'HEADER Message-ID "{mid}"')` → BAD na iCloud.
+- Synology: SEARCH HEADER vrací prázdný výsledek — pravděpodobně nepodporováno.
+
+### Hybridní strategie (doporučená)
+```python
+uid = _find_by_uid(m, imap_uid, folder_db)  # rychlý pokus
+if not uid:
+    uid, folder = _find_by_message_id(m, source_id, host)  # fallback
+```
+
+---
+
+## 18. Dashboard ↔ Scheduler — cross-container komunikace
+
+### Proč
+- Dashboard (port 9000) a Scheduler (port 9001) jsou separátní Docker kontejnery.
+- IMAP akce (mark_read, move_to_trash) musí běžet v Scheduleru (kde jsou IMAP credentials a kód).
+- Dashboard nemůže volat IMAP přímo.
+
+### Řešení: proxy route na Dashboardu
+- Dashboard má route `POST /api/ingest/email/{id}/action/{action}`.
+- Tato route proxuje request na `http://brogi_scheduler:9001/email/{id}/action/{action}`.
+- Scheduler má tento endpoint v `api.py`.
+- JS v šabloně volá `fetch('/api/ingest/email/${id}/action/${action}', {method:'POST'})`.
+- Nikdy nevolej Scheduler API přímo z frontendu (jiný port, CORS problémy).
+
+### Env proměnná
+```
+INGEST_URL=http://brogi_scheduler:9001   # v dashboard kontejneru
+```
+
+---
+
+## 19. Jinja2 template — sloupec `action_payload` vs `raw_payload`
+
+### Chyba: tiché selhání přes `except Exception: pass`
+- V `dashboard/main.py` byl dotaz používající neexistující sloupec `raw_payload` (správně: `action_payload`).
+- `psycopg2` hodil výjimku, ale `except Exception: pass` ji spolkl → `emails = []` → prázdná stránka /ukoly.
+- **Poučení**: nikdy nepoužívej `except Exception: pass` v DB dotazech. Vždy loguj:
+  ```python
+  except Exception as _e:
+      logging.getLogger("ukoly").error(f"Chyba: {_e}")
+  ```
+
+---
+
+## 20. Action logging — proč ChromaDB a ne PostgreSQL `actions` tabulka
+
+### Stav 2026-04-25
+- PostgreSQL `actions` tabulka existuje (sql/001_init.sql), ale **kód do ní nezapisuje** — je rezervovaná pro budoucí confirmation workflow (pending → confirmed → executed).
+- Skutečný action log je v **ChromaDB collection `email_actions`** přes `chroma_client.store_email_action()`.
+- Volá se po každé akci v `imap_actions.py` (`mark_read`, `move_to_trash`, `move_to_brogi_folder`) a v `telegram_callback.py` / `api.py`.
+- Účel: nejen log, ale primárně **learning** — `find_repeat_action()` před notifikací zkouší pattern match (≥3 podobné emaily s cosine ≤0.15 → auto-akce bez TG potvrzení).
+
+### Důsledky pro debugging
+- Pokud chceš auditovat akce, **nehledej v `actions` tabulce** — je prázdná.
+- Stav v PG drží `email_messages.status` (`new`/`classified`/`reviewed`/`unsubscribed`) + `folder` + `human_reviewed`.
+- IMAP `\Seen` flag autoritativní zdroj = IMAP server, ne DB. Nelze v DB SQL dotazem zjistit "kolik je nepřečtených".
+
+### Dead columns v `email_messages`
+- `processed_at` — nikdy se nezapisuje. Logika přechází přes `status` + `folder` + `human_reviewed`.
+- `raw_payload` neobsahuje `seen` flag.
+
+---
+
+## 21. IMAP transient connect errors — auto-recovery
+
+### Co se v lozích objevuje
+```
+[ERROR] [account] Chyba: [Errno -3] Try again — reconnect za 30s
+[ERROR] [account] Chyba: command: LOGIN => socket error: EOF — reconnect za 30s
+[ERROR] [account] Chyba: EOF occurred in violation of protocol (_ssl.c:2437) — reconnect za 30s
+```
+
+### Co to znamená
+- `[Errno -3] Try again` = transient DNS resolve failure z Docker kontejneru.
+- `EOF in violation of protocol` = TLS handshake ztratil spojení (často shodný moment napříč všemi účty → síťový blip).
+- `socket error: EOF` při LOGIN = server zahodil spojení (rate limit / restart serveru).
+
+### Reakce systému
+- Scheduler má auto-reconnect 30s — IDLE se znovu obnoví během 5–15 minut.
+- Není potřeba zásah, **pokud chyba opakovaně blokuje konkrétní účet déle než hodinu**.
+- Při dlouhodobém výpadku konkrétního účtu: zkontroluj `imap_status` tabulku (per-account health).
+
+### Důsledky pro DB obsah
+- Pokud byl účet dlouho odpojený a měl IDLE-only fetch → nové emaily se mohou zachytit až při backup scanu (30min).
+- Tichý INBOX (např. `brogi@`, `servicedesk@`) ≠ broken ingest. Ověř nejdřív v Mail.app jestli tam vůbec něco přichází.
+
+---
+
+## 22. Konvence pojmenování účtů — `mailbox` v DB
+
+- Sloupec `email_messages.mailbox` obsahuje **email adresu** (např. `dxpavel@gmail.com`), ne display name z Mail.app.
+- Mail.app často zobrazuje účty pod přezdívkami:
+  - `BrogiMAT email` = `brogi@dxpsolutions.cz`
+  - `ZÁMEČNICTVÍ Rožďálovice` = `zamecnictvi.rozdalovice@gmail.com`
+- Při porovnání Mail.app ↔ DB **vždy mapuj přes adresu**, ne přes display name.
+
+---
+
+## Co ještě nebylo řešeno / TODO
+
+- **TG `_offset` persistence** — po restartu scheduleru se offset resetuje na 0; callbacks z doby restartu se ztratí. Řešení: uložit offset do DB nebo souboru.
+- **AI analysis layer** — Ollama (local) + Claude API (online); klasifikace běží, ale plná analýza ne
+- **iMessage ingest** — bridge endpoint naplánován, ingest skript a DB tabulka chybí
+- **Calendar Full Disk Access na PROD** — na BrogiServer (Apple Studio) bude potřeba explicitně udělit Full Disk Access pro bridge proces
+- **ChromaDB query layer** — `find_repeat_action` běží před notifikací; další vektorové vyhledávání (semantic search nad maily) zatím nepoužito
+- **PROD deployment** — BrogiServer (Apple Studio) není nakonfigurován; celý stack běží jen na DEV
+- **BrogiASIST složky na Forpsi** — na Forpsi/Synology nejsou vytvořeny BrogiASIST/* složky; emaily se přesouvají jen do Trash
+- **`actions` tabulka** — confirmation workflow (pending → confirmed → executed) není implementován; tabulka je placeholder
+- **`email_messages.processed_at`** — dead column; buď začít zapisovat při akci, nebo dropnout při příští migraci
