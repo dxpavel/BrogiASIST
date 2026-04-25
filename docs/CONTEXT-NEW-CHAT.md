@@ -25,7 +25,7 @@ Cíl: z 1-2h operativy denně na 10-15 minut.
 - Dashboard FastAPI + Jinja2 (Docker, port 9000)
 - Scheduler APScheduler + IMAP IDLE (Docker, port 9001)
 - Apple Bridge FastAPI (na hostu, port 9100, launchd autostart)
-- Telegram bot (polling loop v scheduleru, callback handler aktivní)
+- Telegram bot (polling loop v scheduleru, callback handler aktivní, offset persistentní v config tabulce)
 
 ### Co je implementováno
 - IMAP ingest (8 účtů, IDLE push + 30min backup scan)
@@ -58,15 +58,17 @@ Cíl: z 1-2h operativy denně na 10-15 minut.
 - iMessage ingest — sqlite přístup znám, ingest skript chybí
 - PROD deployment (BrogiServer / Apple Studio) — běží jen DEV
 - Topic intersections UI (v admin formuláři chybí)
-- TG `_offset` persistence — po restartu scheduleru se offset resetuje na 0; staré callbacks se ztratí
 - `actions` tabulka — placeholder pro confirmation workflow (pending → confirmed → executed); aktuálně **prázdná**, kód nepoužívá
 - `email_messages.processed_at` — dead column; logika přechází přes `status` + `folder` + `human_reviewed`
+- **Apple Bridge notes/add** — JXA escape bug (speciální znaky v body → SyntaxError 500); fix: `json.dumps(body)` místo f-string
+- **docker-compose bind mount** — scheduler nemá bind mount pro `services/ingest/`; změny na hostu vyžadují `docker cp` nebo rebuild
 
 ### Action logging — kde se loguje (pozor!)
 - **NE** v PostgreSQL `actions` tabulce (prázdná, rezervovaná pro budoucí workflow)
-- **ANO** v ChromaDB collection `email_actions` přes `chroma_client.store_email_action()` — embedding (Ollama nomic-embed-text) + metadata (action/typ/firma/mailbox)
-- Volá se po každé akci v `imap_actions.py`, `telegram_callback.py`, `api.py`
-- Před TG notifikací: `find_repeat_action()` zkontroluje pattern (≥3 podobné s cosine ≤0.15 → auto-akce)
+- **ANO** v ChromaDB collection `email_actions` přes `chroma_client.store_email_action()` — embedding (Ollama nomic-embed-text) + metadata (action/typ/firma/mailbox/human_corrected/timestamp)
+- Volá se po každé akci v `telegram_callback.py` a `api.py` (WebUI proxy); metadatata zahrnují kdo/kdy/co/proč/z jakého účtu
+- Před TG notifikací: `find_repeat_action()` zkontroluje pattern (≥3 podobné s cosine ≤0.15 → auto-akce bez TG dotazu)
+- Backfill 120 historických akcí z DB do ChromaDB: `services/ingest/backfill_chroma.py`
 
 ### IMAP ingest — známé transient errors (neblokující)
 Občas v lozích:
@@ -144,7 +146,7 @@ pkill -f apple-bridge
 - Callback typy: `spam:yes/no:{id}`, `email:hotovo/precteno/ceka/spam/of/rem/note/unsub/skip:{id}`
 - Tracking: sloupce `tg_notified_at`, `tg_message_id` v `email_messages`
 - Po akci: TG zpráva s tlačítky se automaticky smaže (`delete_message(tg_message_id)`)
-- ⚠️ `_offset` není persistentní — restart scheduleru resetuje offset na 0, starší callbacks se ztratí
+- Offset persistentní v `config` tabulce (key=`tg_callback_offset`) — callbacks přežijí restart scheduleru
 
 ---
 
@@ -224,8 +226,13 @@ docker exec brogi_scheduler python backfill_mark_read.py
 | 2026-04-24 | /ukoly zobrazuje plnou sadu tlačítek — AI klasifikace nezužuje výběr |
 | 2026-04-24 | Scheduler port 9001 exposed — dashboard proxy volá ingest API |
 | 2026-04-24 | Backfill skripty vytvořeny pro retroaktivní IMAP akce |
-| 2026-04-25 | Action logging definitivně přes ChromaDB `email_actions` (ne PG `actions`) — invariant z 2026-04-22 přepsán; `actions` tabulka rezervována pro budoucí confirmation workflow |
-| 2026-04-25 | Dokumentace synchronizována s realitou (architecture, lessons-learned, CONTEXT) — `processed_at` dead column, mailbox v DB = email adresa (ne Mail.app display name) |
+| 2026-04-25 | Action logging definitivně přes ChromaDB `email_actions` (ne PG `actions`) — metadata: kdo/kdy/co/proč/z jakého účtu |
+| 2026-04-25 | Backfill 120 historických email akcí z DB do ChromaDB (`backfill_chroma.py`) |
+| 2026-04-25 | TG: Univerzální sada 8 tlačítek pro každý email (nezávisle na AI-typu); CHROMA_HOST opraven z localhost na chromadb |
+| 2026-04-25 | TG offset persistentní v config tabulce — callbacks přežijí restart scheduleru |
+| 2026-04-25 | KRITICKÁ OPRAVA: DB lock contention v `_email_action` — pořadí: bridge call → DB COMMIT → IMAP (nikdy IMAP před COMMIT) |
+| 2026-04-25 | E2E verifikace: klik na TG tlačítko → rozhodnutí uloženo do DB + ChromaDB + IMAP přesun + TG zpráva zmizí |
+| 2026-04-25 | Docker: scheduler nemá bind mount — změny kódu vyžadují `docker cp` + restart nebo rebuild image |
 
 ---
 

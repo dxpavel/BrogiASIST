@@ -11,7 +11,60 @@ from chroma_client import store_email_action
 
 log = logging.getLogger(__name__)
 
-_offset = 0
+OFFSET_KEY = "tg_callback_offset"
+
+
+def _load_offset() -> int:
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM config WHERE key=%s", (OFFSET_KEY,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return int(row[0]) if row else 0
+    except Exception as e:
+        log.error(f"_load_offset: {e}")
+        return 0
+
+
+def _save_offset(value: int) -> None:
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO config (key, value, module) VALUES (%s, %s, 'telegram')
+            ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()
+        """, (OFFSET_KEY, str(value)))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        log.error(f"_save_offset: {e}")
+
+
+def _bridge_call(path: str, payload: dict, label: str, email_id: str) -> bool:
+    """Volá Apple Bridge; vrací True pokud uspěl. Loguje úspěch i chybu, posílá TG při selhání."""
+    import httpx as _httpx, os as _os
+    bridge = _os.getenv("APPLE_BRIDGE_URL", "http://host.docker.internal:9100")
+    try:
+        r = _httpx.post(f"{bridge}{path}", json=payload, timeout=15)
+        if r.status_code == 200:
+            log.info(f"{label} created: email_id={email_id} status=200")
+            return True
+        log.error(f"{label} FAILED: email_id={email_id} status={r.status_code} body={r.text[:200]}")
+        try:
+            send(f"❌ <b>{label} selhalo</b> ({r.status_code})\n<code>{r.text[:200]}</code>")
+        except Exception:
+            pass
+        return False
+    except Exception as e:
+        log.error(f"{label} bridge error: email_id={email_id} {e}")
+        try:
+            send(f"❌ <b>{label} selhalo</b>\n<code>{str(e)[:200]}</code>")
+        except Exception:
+            pass
+        return False
 
 
 def _mark_spam(email_id: int, is_spam: bool, from_address: str = None):
@@ -63,75 +116,92 @@ def _folder_for_email(email_id: str) -> str:
 
 
 def _email_action(email_id: str, action: str):
-    conn = get_conn()
-    cur = conn.cursor()
+    """
+    Pořadí: bridge call (pokud je) → DB UPDATE + COMMIT → IMAP move.
+    DB se commituje DŘÍV než IMAP, jinak by druhá conn (uvnitř move_to_*)
+    blokovala na row-locku této první conn.
+    """
     do_mark_read = True  # vždy označit přečtené, kromě skip
+    imap_op = None       # ("brogi", subfolder) | ("trash",) | None
 
     if action == "hotovo":
+        conn = get_conn(); cur = conn.cursor()
         cur.execute("UPDATE email_messages SET task_status='HOTOVO', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
-        move_to_brogi_folder(email_id, "HOTOVO")
+        conn.commit(); cur.close(); conn.close()
+        imap_op = ("brogi", "HOTOVO")
     elif action == "precteno":
-        cur.execute("UPDATE email_messages SET task_status='HOTOVO', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
         folder = _folder_for_email(email_id)
-        move_to_brogi_folder(email_id, folder)
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("UPDATE email_messages SET task_status='HOTOVO', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
+        conn.commit(); cur.close(); conn.close()
+        imap_op = ("brogi", folder)
     elif action == "ceka":
+        conn = get_conn(); cur = conn.cursor()
         cur.execute("UPDATE email_messages SET task_status='ČEKÁ-NA-MĚ', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
-        move_to_brogi_folder(email_id, "CEKA")
+        conn.commit(); cur.close(); conn.close()
+        imap_op = ("brogi", "CEKA")
         do_mark_read = False  # WAIT = zůstane unread
     elif action == "spam":
         from_addr = _get_email_from(email_id)
         _mark_spam(email_id, True, from_addr)
-        move_to_trash(email_id)
+        imap_op = ("trash",)
     elif action == "of":
+        conn = get_conn(); cur = conn.cursor()
         cur.execute("SELECT subject, from_address FROM email_messages WHERE id=%s", (email_id,))
         row = cur.fetchone()
-        if row:
-            subject, from_addr = row
-            import httpx as _httpx, os as _os
-            bridge = _os.getenv("APPLE_BRIDGE_URL", "http://host.docker.internal:9100")
-            try:
-                _httpx.post(f"{bridge}/omnifocus/add_task", json={
-                    "name": subject or "(bez předmětu)",
-                    "note": f"Od: {from_addr}\nBrogiASIST email id: {email_id}",
-                    "flagged": True
-                }, timeout=15)
-            except Exception as _e:
-                log.error(f"OF bridge error: {_e}")
+        cur.close(); conn.close()
+        if not row:
+            return
+        subject, from_addr = row
+        ok = _bridge_call("/omnifocus/add_task", {
+            "name": subject or "(bez předmětu)",
+            "note": f"Od: {from_addr}\nBrogiASIST email id: {email_id}",
+            "flagged": True,
+        }, "OF", str(email_id))
+        if not ok:
+            return
+        conn = get_conn(); cur = conn.cursor()
         cur.execute("UPDATE email_messages SET task_status='→OF', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
-        move_to_brogi_folder(email_id, "HOTOVO")
+        conn.commit(); cur.close(); conn.close()
+        imap_op = ("brogi", "HOTOVO")
     elif action == "rem":
+        conn = get_conn(); cur = conn.cursor()
         cur.execute("SELECT subject, from_address FROM email_messages WHERE id=%s", (email_id,))
         row = cur.fetchone()
-        if row:
-            subject, from_addr = row
-            import httpx as _httpx, os as _os
-            bridge = _os.getenv("APPLE_BRIDGE_URL", "http://host.docker.internal:9100")
-            try:
-                _httpx.post(f"{bridge}/reminders/add", json={
-                    "name": subject or "(bez předmětu)",
-                    "body": f"Od: {from_addr}\nBrogiASIST email id: {email_id}",
-                }, timeout=15)
-            except Exception as _e:
-                log.error(f"REM bridge error: {_e}")
+        cur.close(); conn.close()
+        if not row:
+            return
+        subject, from_addr = row
+        ok = _bridge_call("/reminders/add", {
+            "name": subject or "(bez předmětu)",
+            "body": f"Od: {from_addr}\nBrogiASIST email id: {email_id}",
+        }, "REM", str(email_id))
+        if not ok:
+            return
+        conn = get_conn(); cur = conn.cursor()
         cur.execute("UPDATE email_messages SET task_status='→REM', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
-        move_to_brogi_folder(email_id, "HOTOVO")
+        conn.commit(); cur.close(); conn.close()
+        imap_op = ("brogi", "HOTOVO")
     elif action == "note":
+        conn = get_conn(); cur = conn.cursor()
         cur.execute("SELECT subject, from_address, body_text FROM email_messages WHERE id=%s", (email_id,))
         row = cur.fetchone()
-        if row:
-            subject, from_addr, body = row
-            import httpx as _httpx, os as _os
-            bridge = _os.getenv("APPLE_BRIDGE_URL", "http://host.docker.internal:9100")
-            try:
-                _httpx.post(f"{bridge}/notes/add", json={
-                    "name": subject or "(bez předmětu)",
-                    "body": f"Od: {from_addr}\n\n{body or ''}"[:2000],
-                }, timeout=15)
-            except Exception as _e:
-                log.error(f"NOTE bridge error: {_e}")
+        cur.close(); conn.close()
+        if not row:
+            return
+        subject, from_addr, body = row
+        ok = _bridge_call("/notes/add", {
+            "name": subject or "(bez předmětu)",
+            "body": f"Od: {from_addr}\n\n{body or ''}"[:2000],
+        }, "NOTE", str(email_id))
+        if not ok:
+            return
+        conn = get_conn(); cur = conn.cursor()
         cur.execute("UPDATE email_messages SET human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
-        move_to_brogi_folder(email_id, "HOTOVO")
+        conn.commit(); cur.close(); conn.close()
+        imap_op = ("brogi", "HOTOVO")
     elif action == "unsub":
+        conn = get_conn(); cur = conn.cursor()
         cur.execute("SELECT from_address FROM email_messages WHERE id=%s", (email_id,))
         row = cur.fetchone()
         if row:
@@ -142,37 +212,59 @@ def _email_action(email_id: str, action: str):
                 ON CONFLICT (rule_type, match_field, match_value) DO UPDATE
                     SET result_value='yes', hit_count=classification_rules.hit_count+1, updated_at=NOW()
             """, (row[0],))
-        move_to_trash(email_id)
+        conn.commit(); cur.close(); conn.close()
+        imap_op = ("trash",)
     elif action == "skip":
         do_mark_read = False  # skip = nechej unread
 
-    conn.commit()
-    cur.close()
-    conn.close()
+    if imap_op and imap_op[0] == "brogi":
+        move_to_brogi_folder(email_id, imap_op[1])
+    elif imap_op and imap_op[0] == "trash":
+        move_to_trash(email_id)
 
     if do_mark_read:
         action_done(email_id)
 
     if action != "skip":
-        # Ulož do ChromaDB pro učení
         try:
             conn2 = get_conn()
             cur2 = conn2.cursor()
-            cur2.execute(
-                "SELECT from_address, subject, body_text, typ, firma, mailbox FROM email_messages WHERE id=%s",
-                (email_id,)
-            )
+            cur2.execute("""
+                SELECT from_address, subject, body_text, typ, firma, mailbox,
+                       ai_confidence, task_status
+                FROM email_messages WHERE id=%s
+            """, (email_id,))
             row = cur2.fetchone()
             cur2.close()
             conn2.close()
             if row:
-                from_addr, subject, body, typ, firma, mailbox = row
+                from_addr, subject, body, typ, firma, mailbox, ai_conf, task_st = row
                 store_email_action(
                     str(email_id), from_addr or "", subject or "", body or "",
-                    action, typ or "", firma or "", mailbox or ""
+                    action, typ or "", firma or "", mailbox or "",
+                    ai_confidence=ai_conf,
+                    task_status=task_st or "",
+                    human_corrected=True,
                 )
         except Exception as _e:
             log.error(f"chroma store after action: {_e}")
+
+    # Smaž TG zprávu s tlačítky (sjednoceně pro TG i WebUI cestu).
+    try:
+        conn3 = get_conn()
+        cur3 = conn3.cursor()
+        cur3.execute("SELECT tg_message_id FROM email_messages WHERE id=%s", (email_id,))
+        row = cur3.fetchone()
+        cur3.close()
+        conn3.close()
+        if row and row[0]:
+            ok = delete_message(row[0])
+            if ok:
+                log.info(f"TG msg deleted: email_id={email_id} tg_msg_id={row[0]}")
+            else:
+                log.warning(f"TG msg delete failed (>48h or already gone): email_id={email_id} tg_msg_id={row[0]}")
+    except Exception as _e:
+        log.error(f"delete TG msg: {_e}")
 
 
 ACTION_LABEL = {
@@ -212,18 +304,6 @@ def process_callback(update: dict):
         _email_action(email_id, action)
         label = ACTION_LABEL.get(action, "OK")
         answer_callback(cb_id, label)
-        # Smaž TG zprávu s tlačítky
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT tg_message_id FROM email_messages WHERE id=%s", (email_id,))
-            row = cur.fetchone()
-            cur.close()
-            conn.close()
-            if row and row[0]:
-                delete_message(row[0])
-        except Exception as _e:
-            log.error(f"delete TG msg: {_e}")
         log.info(f"Callback email:{action} id={email_id}")
 
     else:
@@ -231,14 +311,19 @@ def process_callback(update: dict):
 
 
 def run_callback_loop():
-    global _offset
-    log.info("Telegram callback loop START")
+    offset = _load_offset()
+    log.info(f"Telegram callback loop START (offset={offset})")
     while True:
         try:
-            updates = get_updates(offset=_offset)
+            updates = get_updates(offset=offset)
             for u in updates:
-                _offset = u["update_id"] + 1
-                process_callback(u)
-        except Exception as e:
-            log.error(f"Callback loop: {e}")
-        time.sleep(2)
+                offset = u["update_id"] + 1
+                _save_offset(offset)
+                try:
+                    process_callback(u)
+                except Exception as e:
+                    log.error(f"process_callback failed update_id={u.get('update_id')}: {e}")
+            time.sleep(2)
+        except BaseException as e:
+            log.error(f"Callback loop iter error (continuing): {e!r}")
+            time.sleep(5)

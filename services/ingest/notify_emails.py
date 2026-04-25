@@ -20,64 +20,29 @@ TYP_ICON = {
     "POTVRZENÍ":  "✔️",
 }
 
-BUTTONS = {
-    "ÚKOL": [
-        [
-            {"text": "📋 OF",        "callback_data": "email:of:{id}"},
-            {"text": "⏰ REM",        "callback_data": "email:rem:{id}"},
-            {"text": "📝 NOTE",       "callback_data": "email:note:{id}"},
-        ],[
-            {"text": "✅ Hotovo",    "callback_data": "email:hotovo:{id}"},
-            {"text": "⏳ Čeká",      "callback_data": "email:ceka:{id}"},
-            {"text": "🗑️ Spam",     "callback_data": "email:spam:{id}"},
-            {"text": "⏭️ Skip",     "callback_data": "email:skip:{id}"},
-        ],
+UNIVERSAL_BUTTONS = [
+    [
+        {"text": "📋 OF",        "callback_data": "email:of:{id}"},
+        {"text": "⏰ REM",        "callback_data": "email:rem:{id}"},
+        {"text": "📝 NOTE",       "callback_data": "email:note:{id}"},
     ],
-    "FAKTURA": [[
-        {"text": "✅ Zaplaceno", "callback_data": "email:hotovo:{id}"},
-        {"text": "📋 OF",        "callback_data": "email:of:{id}"},
-        {"text": "📝 NOTE",      "callback_data": "email:note:{id}"},
-        {"text": "⏭️ Skip",     "callback_data": "email:skip:{id}"},
-    ]],
-    "NOTIFIKACE": [[
-        {"text": "📋 OF",        "callback_data": "email:of:{id}"},
+    [
+        {"text": "✅ Hotovo",    "callback_data": "email:hotovo:{id}"},
         {"text": "👁️ Přečteno", "callback_data": "email:precteno:{id}"},
+        {"text": "⏳ Čeká",      "callback_data": "email:ceka:{id}"},
+    ],
+    [
         {"text": "🗑️ Spam",     "callback_data": "email:spam:{id}"},
         {"text": "⏭️ Skip",     "callback_data": "email:skip:{id}"},
-    ]],
-    "NABÍDKA": [[
-        {"text": "📋 OF",        "callback_data": "email:of:{id}"},
-        {"text": "📝 NOTE",      "callback_data": "email:note:{id}"},
-        {"text": "🗑️ Spam",     "callback_data": "email:spam:{id}"},
-        {"text": "⏭️ Skip",     "callback_data": "email:skip:{id}"},
-    ]],
-    "INFO": [[
-        {"text": "📝 NOTE",      "callback_data": "email:note:{id}"},
-        {"text": "👁️ Přečteno", "callback_data": "email:precteno:{id}"},
-        {"text": "⏭️ Skip",     "callback_data": "email:skip:{id}"},
-    ]],
-    "NEWSLETTER": [[
-        {"text": "👁️ Přečteno", "callback_data": "email:precteno:{id}"},
-        {"text": "🚫 Odhlásit", "callback_data": "email:unsub:{id}"},
-        {"text": "🗑️ Spam",     "callback_data": "email:spam:{id}"},
-        {"text": "⏭️ Skip",     "callback_data": "email:skip:{id}"},
-    ]],
-    "POTVRZENÍ": [[
-        {"text": "📝 NOTE",      "callback_data": "email:note:{id}"},
-        {"text": "👁️ Přečteno", "callback_data": "email:precteno:{id}"},
-        {"text": "⏭️ Skip",     "callback_data": "email:skip:{id}"},
-    ]],
-}
+    ],
+]
 
 SKIP_TYPY = {"SPAM", "ESHOP"}
 
 
-def _render_buttons(typ: str, email_id: str) -> list | None:
-    template = BUTTONS.get(typ)
-    if not template:
-        return None
+def _render_buttons(typ: str, email_id: str) -> list:
     return [[{**b, "callback_data": b["callback_data"].replace("{id}", email_id)} for b in row]
-            for row in template]
+            for row in UNIVERSAL_BUTTONS]
 
 
 def notify_classified_emails():

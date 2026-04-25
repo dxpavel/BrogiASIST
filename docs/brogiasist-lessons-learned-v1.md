@@ -430,9 +430,99 @@ INGEST_URL=http://brogi_scheduler:9001   # v dashboard kontejneru
 
 ---
 
+---
+
+## 23. DB row-level lock contention v `_email_action` — KRITICKÁ PAST (2026-04-25)
+
+### Symptom
+- Každý klik na akční tlačítko (TG nebo WebUI) visí nekonečně (timeout 30–60s).
+- `skip` funguje, ostatní akce ne.
+- V `pg_stat_activity`: jedno připojení `idle in transaction` + druhé čeká na UPDATE stejného řádku.
+
+### Příčina
+`_email_action()` původně: otevřela `conn1`, udělala `UPDATE email_messages` bez commitu, pak zavolala `move_to_brogi_folder()` / `move_to_trash()`. Tyto funkce otevírají **vlastní** `conn2` a v `_update_db_folder()` volají další `UPDATE` na stejný řádek. `conn2` blokuje na row-locku z `conn1`. `conn1` čeká až `move_to_*` vrátí → **uváznutí**.
+
+### Oprava
+Pořadí v `_email_action` (viz `telegram_callback.py`):
+1. Bridge call (OF/REM/NOTE) — pokud selže, return early
+2. `conn.commit()` a `conn.close()` — uvolnit row-lock **před** IMAP
+3. `move_to_brogi_folder()` / `move_to_trash()` — otevírají vlastní conn, mohou UPDATE volně
+
+### Diagnostika
+```bash
+docker exec brogi_postgres psql -U brogi -d assistance -c "
+SELECT pid, state, age(now(), xact_start) AS xact_age, left(query, 100) AS query
+FROM pg_stat_activity WHERE datname='assistance' AND state != 'idle';"
+```
+Pokud vidíš `idle in transaction` + `active` na stejném řádku → tohle je ten problém.
+
+```bash
+# Nouzové řešení — zabij stuck transakce:
+docker exec brogi_postgres psql -U brogi -d assistance -c "
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+WHERE datname='assistance' AND state='idle in transaction';"
+```
+
+---
+
+## 24. Docker kontejner nedostane změny automaticky (2026-04-25)
+
+### Situace
+Docker Compose pro `scheduler` **nemá bind mount** pro `services/ingest/` — zdrojové soubory jsou nakopírované do image při `docker build`. Úprava souboru na hostu se do běžícího kontejneru **nepropaguje**.
+
+### Rychlá oprava (pro testování)
+```bash
+docker cp services/ingest/telegram_callback.py brogi_scheduler:/app/telegram_callback.py
+docker restart brogi_scheduler
+```
+
+### Správné řešení pro produkci
+Přidat bind mount do `docker-compose.yml`:
+```yaml
+scheduler:
+  volumes:
+    - ./services/ingest:/app   # zdrojové soubory live-mounted
+    - ./logs:/app/logs
+```
+Nebo použít `docker compose up -d --build scheduler` po každé změně.
+
+### Jak zjistit stáří souboru v kontejneru
+```bash
+docker exec brogi_scheduler stat -c "%y" /app/telegram_callback.py
+# Porovnej s lokálním: stat -f "%Sm" services/ingest/telegram_callback.py
+```
+
+---
+
+## 25. TG callback offset — persistentní v DB (2026-04-25)
+
+### Stav
+- Offset uložen v tabulce `config` (key=`tg_callback_offset`) po každém zpracovaném update.
+- Při restartu scheduleru se offset načte z DB → žádné ztracené callbacks.
+- Fallback: pokud `config` tabulka selže, offset=0 (emaily se znovu přepošlou jako duplicate).
+
+### Kde v kódu
+- `telegram_callback.py`: `_load_offset()`, `_save_offset()`, `run_callback_loop()`.
+
+---
+
+## 26. Google Calendar pozvánek — špatná klasifikace (2026-04-25)
+
+### Symptom
+Emaily ve tvaru `Invitation: Název události @ datum (dxpavel@me.com)` od Google Calendar jsou klasifikovány jako `NABÍDKA` (ai_confidence 0–1, ale zjevně chybná).
+
+### Příčina
+AI (Llama3.2) nemá v seznamu typů `POZVÁNKA` ani `KALENDÁŘ`. Vidí slovo *Invitation* + strukturu a zvolí `NABÍDKA` jako nejbližší match.
+
+### Řešení (zatím ne implementováno)
+1. **classification_rules**: přidat rule `subject ILIKE 'Invitation:%' → typ=POTVRZENÍ` (nebo ÚKOL).
+2. **Prompt engineering**: přidat instrukci do Llama promptu.
+3. **Nový typ POZVÁNKA**: rozšířit enum a klasifikační logiku.
+
+---
+
 ## Co ještě nebylo řešeno / TODO
 
-- **TG `_offset` persistence** — po restartu scheduleru se offset resetuje na 0; callbacks z doby restartu se ztratí. Řešení: uložit offset do DB nebo souboru.
 - **AI analysis layer** — Ollama (local) + Claude API (online); klasifikace běží, ale plná analýza ne
 - **iMessage ingest** — bridge endpoint naplánován, ingest skript a DB tabulka chybí
 - **Calendar Full Disk Access na PROD** — na BrogiServer (Apple Studio) bude potřeba explicitně udělit Full Disk Access pro bridge proces
@@ -441,3 +531,5 @@ INGEST_URL=http://brogi_scheduler:9001   # v dashboard kontejneru
 - **BrogiASIST složky na Forpsi** — na Forpsi/Synology nejsou vytvořeny BrogiASIST/* složky; emaily se přesouvají jen do Trash
 - **`actions` tabulka** — confirmation workflow (pending → confirmed → executed) není implementován; tabulka je placeholder
 - **`email_messages.processed_at`** — dead column; buď začít zapisovat při akci, nebo dropnout při příští migraci
+- **Apple Bridge notes/add JXA** — escaping speciálních znaků v body textu; Python f-string interpolace rozbije JS string → SyntaxError 500. Opravit pomocí `json.dumps(body)`.
+- **docker-compose bind mount** — přidat `./services/ingest:/app` volume pro scheduler (jinak `docker cp` po každé změně)

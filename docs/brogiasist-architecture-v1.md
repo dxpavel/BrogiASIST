@@ -38,10 +38,10 @@
 - `depends_on: postgres` (condition: service_healthy)
 
 ### `scheduler`
-- APScheduler main process + IMAP IDLE daemon threads
-- No exposed port
+- APScheduler main process + IMAP IDLE daemon threads + Ingest API (port 9001) + TG callback loop
+- External port: `9001:9001`
 - `depends_on: postgres` (condition: service_healthy)
-- Runs all periodic ingest jobs
+- ⚠️ Zdrojové soubory jsou baked do image — změny na hostu vyžadují `docker cp` nebo `docker compose up -d --build scheduler`
 
 ### `apple-bridge` (NOT in Docker)
 - FastAPI service running directly on Mac host
@@ -86,6 +86,7 @@ Learning  (chroma_client.store_email_action)
 - Každá akce probíhá fyzicky na IMAP a aktualizuje `email_messages.folder` + `status='reviewed'` + `human_reviewed=TRUE`.
 - Po každé akci se volá `chroma_client.store_email_action()` → embedding + metadata do ChromaDB pro learning.
 - `find_repeat_action()` před notifikací: pokud ≥3 podobné emaily (cosine ≤0.15) měly stejnou akci → automatická exekuce bez TG potvrzení.
+- **Pořadí v `_email_action`**: bridge call → DB UPDATE + COMMIT → IMAP move. Nikdy IMAP před commitem — způsobuje row-level lock contention (druhá conn blokuje na UPDATE stejného řádku). Viz lesson #23.
 
 **Pozn.: dead/reserved schémata** (existují v DB, kód je nepoužívá):
 - `actions` tabulka — rezervována pro budoucí confirmation workflow (pending → confirmed → executed). Aktuálně 0 záznamů.
@@ -262,5 +263,5 @@ docker exec brogi_scheduler python backfill_mark_read.py
 - PROD deployment — BrogiServer (Apple Studio)
 - zamecnictvi@gmail.com (App Password získán, účet pod jménem `zamecnictvi.rozdalovice@gmail.com`)
 - Topic intersections UI (v admin formuláři chybí)
-- TG `_offset` persistence — po restartu scheduleru se offset resetuje na 0; staré callbacks se ztratí
 - `actions` tabulka — confirmation workflow (pending → confirmed → executed)
+- Apple Bridge notes/add JXA escape bug (speciální znaky → SyntaxError 500; fix: json.dumps)

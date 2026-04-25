@@ -90,15 +90,38 @@ def store_email_action(
     typ: str = "",
     firma: str = "",
     mailbox: str = "",
+    ai_confidence: float | None = None,
+    task_status: str = "",
+    timestamp: str = "",
+    human_corrected: bool = False,
 ):
-    """Uloží email + akci do ChromaDB po provedení akce."""
+    """
+    Uloží email + akci do ChromaDB po provedení akce.
+
+    Metadata umožňují zpětnou analýzu: kdo (mailbox, from_addr), kdy (timestamp),
+    co (action, task_status), proč (ai_confidence, typ, firma),
+    a zda Pavel přepsal AI klasifikaci (human_corrected).
+    """
+    from datetime import datetime, timezone
     try:
         col_id = _get_or_create_collection("email_actions")
         text = _doc_text(from_addr, subject, body)
         embedding = _embed(text)
-        _upsert(col_id, [str(email_id)], [embedding], [text],
-                [{"action": action, "typ": typ or "", "firma": firma or "", "mailbox": mailbox or ""}])
-        log.info(f"chroma store: email_id={email_id} action={action}")
+        meta = {
+            "action": action,
+            "typ": typ or "",
+            "firma": firma or "",
+            "mailbox": mailbox or "",
+            "from_addr": from_addr or "",
+            "subject": (subject or "")[:200],
+            "task_status": task_status or "",
+            "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
+            "human_corrected": bool(human_corrected),
+        }
+        if ai_confidence is not None:
+            meta["ai_confidence"] = float(ai_confidence)
+        _upsert(col_id, [str(email_id)], [embedding], [text], [meta])
+        log.info(f"chroma store: email_id={email_id} action={action} mailbox={mailbox} typ={typ}")
     except Exception as e:
         log.error(f"chroma store_email_action: {e}")
 
