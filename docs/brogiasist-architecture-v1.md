@@ -309,3 +309,84 @@ docker exec brogi_scheduler python backfill_mark_read.py
 - **Attachment bind mount** — `/Users/pavel/Desktop/OmniFocus:/app/attachments` v docker-compose.yml
 - **ChromaDB WebUI** — `/chroma` stránka v dashboardu (čtení, editace, mazání vzorů)
 - **Chroma cleanup** — smazány spam záznamy pro odesílatele v apple_contacts (13 záznamů), Lahoda 3 záznamy ručně
+
+## Implementováno v 2026-04-26 (branch `2` — release v2)
+
+### BUG-008 fix — Apple Bridge fork() crash
+- Multi-threaded fork() bug v Network.framework atfork hook → Bridge náhodně padal s SIGSEGV
+- Workaround #1 (`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`) na macOS 26.4.1 nefunguje
+- **Proper fix:** `os.posix_spawn()` v `services/apple-bridge/main.py:_spawn_osascript()` — atomický syscall, neforkuje, atfork hooks se nevolají
+- Verifikováno: 50 requestů × 21 minut zátěže → 0 crashů
+- Lessons learned sekce 35
+
+### Email Semantics v1 spec — kanonický referenční dokument
+- `docs/brogiasist-semantics-v1.md` — 9 TYPů, 5 STATUS, 8 ACTION + 2undo (prefix `2` = "to")
+- 19 skupin Apple Contacts jako orthogonal signál
+- decision_rules engine, RFC 5322 threading, email↔OF linking, failure handling
+- Grafická specifikace (kostičky/fill/kazeťák symboly)
+
+### Blocker A — RFC 5322 headers v ingest
+- `services/ingest/ingest_email.py` ukládá 13 hlaviček do `raw_payload.headers` (Message-ID, In-Reply-To, References, List-Id, List-Unsubscribe, List-Post, Auto-Submitted, Content-Type, Cc, Bcc, Reply-To, Return-Path, X-Mailer)
+- Pre-AI detekce LIST/ENCRYPTED/INFO-OOO/ERROR-bounce možná
+
+### Blocker B — Apple Contacts groups (orthogonal signál)
+- Apple Bridge `/contacts/all` přepsáno z direct sqlite na **JXA** (FDA limitations pro launchd-spawned procesy — viz lessons sekce 36)
+- Endpoint vrací `groups: [...]` per kontakt (mapping přes `contacts.groups()` + `g.people()`)
+- DB schema `apple_contacts.groups jsonb` + GIN index (sql/012)
+- `ingest_apple_apps.ingest_contacts()` — hash check (sha256) → skip pokud žádné změny od minulého ingestu
+- Interval 12h (Pavel: 2× denně stačí)
+- 🍎 BUG-009 OPEN: data ve 2 disjoint datasets (starý DEV vs nový PROD), group rules zatím nematchují
+
+### Blocker C — `decision_rules` engine
+- `sql/013_decision_rules.sql` — schema + 9 default pravidel (priority 5–80)
+- `services/ingest/decision_engine.py` — `evaluate_email(email)` → decision dict
+- Integrace v `classify_emails.py:classify_new_emails()` — engine PŘED Llamou
+- Condition types: header (exists/equals/contains), group, sender, chroma, ai_fallback
+- Action types: end (set TYP/action + stop pipeline), flag (continue), apply_remembered (chroma), run_llama
+- Verifikováno: 25 emailů, 1× header_list, 4× chroma_match, 20× ai_fallback
+
+### Blocker D1 — schema rozšíření + threading
+- `sql/014_email_semantics_v1.sql`:
+  - `email_messages` přidat: `message_id`, `in_reply_to`, `thread_id`, `of_task_id`, `of_linked_at`, `is_personal`
+  - 3 partial indexy
+  - **Nová tabulka `pending_actions`** (queue pro degraded mode)
+- Threading: `ingest_email.upsert_messages` JOIN přes message_id → zděd thread_id
+
+### Blocker D2 — Llama prompt + per-TYP TG tlačítka
+- Llama prompt: 6 TYPů (ÚKOL/DOKLAD/NABÍDKA/NOTIFIKACE/POZVÁNKA/INFO)
+- ERROR/LIST/ENCRYPTED detekuje engine PŘED Llamou
+- Body 400 → 500 znaků (per spec M5)
+- `notify_emails._buttons_for_typ(typ, email_id, has_unsubscribe)` — per spec sekce 7
+- Backward compat: callback_data zůstává `email:<action>:<id>`
+
+### Blocker D3 (4/6 endpointů) — Apple Bridge nové
+- `GET /omnifocus/task/{task_id}` — fetch task properties
+- `POST /omnifocus/task/{task_id}/append_note` — append k OF notes
+- `GET /notes/{note_id}` — fetch Apple Notes note
+- `POST /notes/{note_id}/append` — HTML-safe append k Notes body
+- TODO: `/calendar/reply`, `/mail/send` (BUG-010 — Mail.app neumí custom headers)
+
+### Blocker D4 — CLS fix + grafická spec
+- Google Fonts `display=swap` → `display=optional` (žádný late font swap)
+- Logo `<img>` dostal explicit width/height (žádný layout shift)
+- 9 CSS variables `--typ-*`, 9 `--action-*`, 5 `--status-*`
+- Třídy `.typ-box`, `.action-btn`, `.status-circle` v base.html
+- Email tabulka v index.html: kostičky `.typ-box` per TYP + 9 nových filter chips
+
+### Blocker D5 — pending queue worker (degraded mode)
+- `services/ingest/pending_worker.py`:
+  - `bridge_health()` — aktivní /health ping
+  - `enqueue(...)` — INSERT do pending_actions
+  - `drain_queue()` — SELECT pending, throttle 2s, retry 3×
+- `_bridge_call` v telegram_callback: connection error → enqueue + True (TG „⏳ ve frontě")
+- Scheduler job `drain_queue` interval 1 min
+
+## Nové komponenty v branch `2`
+
+| Modul | Účel |
+|---|---|
+| `services/ingest/decision_engine.py` | Konfigurovatelný rozhodovací stroj — 9 pravidel z DB, runs PŘED Llamou |
+| `services/ingest/pending_worker.py` | Queue pro Apple Bridge offline (degraded mode) — bridge_health, enqueue, drain_queue |
+| `sql/012_apple_contacts_groups.sql` | apple_contacts.groups jsonb + GIN index |
+| `sql/013_decision_rules.sql` | decision_rules tabulka + 9 default pravidel |
+| `sql/014_email_semantics_v1.sql` | email_messages threading + flags + pending_actions tabulka |

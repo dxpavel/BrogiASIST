@@ -681,6 +681,65 @@ topic_signals (keyword seznam)
 
 ---
 
+## Nové tabulky v 2026-04-26 (branch `2` — release v2)
+
+### `decision_rules` (sql/013) — konfigurovatelný rozhodovací stroj
+
+| Sloupec | Typ | Popis |
+|---|---|---|
+| id | SERIAL PK | |
+| priority | INTEGER NOT NULL | nižší = dřív (range 5–99) |
+| rule_name | VARCHAR(64) UNIQUE | např. `header_list`, `group_vip` |
+| condition_type | VARCHAR(32) | `header` / `group` / `chroma` / `sender` / `ai_fallback` |
+| condition_value | JSONB | per condition_type payload (např. `{"header":"List-Id","operator":"exists"}`) |
+| action_type | VARCHAR(32) | `end` / `flag` / `apply_remembered` / `run_llama` |
+| action_value | JSONB | např. `{"typ":"LIST","action":"2hotovo"}` pro action_type='end' |
+| enabled | BOOLEAN DEFAULT TRUE | |
+| created_at, updated_at | TIMESTAMPTZ | |
+
+Index `idx_decision_rules_priority` partial WHERE enabled = TRUE.
+
+Engine: `services/ingest/decision_engine.py:evaluate_email(email)`.
+
+### `pending_actions` (sql/014) — queue pro Apple Bridge degraded mode
+
+| Sloupec | Typ | Popis |
+|---|---|---|
+| id | SERIAL PK | |
+| email_id | UUID NOT NULL FK | reference na `email_messages(id)` ON DELETE CASCADE |
+| action | VARCHAR(16) | např. `2of`, `2cal`, `2note`, `2rem` |
+| action_data | JSONB | payload pro Apple Bridge call: `{"path": "/omnifocus/add_task", "payload": {...}}` |
+| created_at | TIMESTAMPTZ DEFAULT now() | |
+| attempts | INTEGER DEFAULT 0 | retry counter |
+| last_attempt_at | TIMESTAMPTZ | |
+| last_error | TEXT | |
+| status | VARCHAR(16) DEFAULT 'pending' | `pending` / `processing` / `done` / `failed` |
+
+Index partial WHERE status='pending' (drain query optimization).
+
+Worker: `services/ingest/pending_worker.py:drain_queue()` — interval 1 min, throttle 2s.
+
+## Nové sloupce v 2026-04-26 (branch `2`)
+
+### `email_messages` (sql/014)
+- `message_id` VARCHAR(998) — RFC 5322 Message-ID header (pro threading + dedup)
+- `in_reply_to` VARCHAR(998) — RFC 5322 In-Reply-To header
+- `thread_id` UUID — root id threadu (= id prvního emailu, nebo self.id pokud root)
+- `of_task_id` VARCHAR(128) — OmniFocus task ID po klepnutí na 2of
+- `of_linked_at` TIMESTAMPTZ
+- `is_personal` BOOLEAN DEFAULT FALSE — z decision_rules sender_personal pravidla
+
+Indexy: `idx_email_messages_message_id` / `_thread_id` / `_of_task_id` (partial WHERE NOT NULL).
+
+`raw_payload.headers` (jsonb subkey, blocker A) — 13 RFC 5322 hlaviček: Message-ID, In-Reply-To, References, List-Id, List-Unsubscribe, List-Post, Auto-Submitted, Content-Type, Cc, Bcc, Reply-To, Return-Path, X-Mailer.
+
+### `apple_contacts` (sql/012)
+- `groups` JSONB DEFAULT `'[]'` — array názvů skupin z Apple Contacts (např. `["MEDVEDI 🧸", "VIP ⏰"]`)
+
+GIN index `idx_apple_contacts_groups` pro rychlý lookup `groups @> '[...]'::jsonb`.
+
+---
+
 ## Stav implementace
 
 | Komponenta | Stav | Poznámka |
@@ -707,6 +766,20 @@ topic_signals (keyword seznam)
 | TG Unsub tlačítko | ✅ | přidáno do UNIVERSAL_BUTTONS |
 | TG auto-spam notifikace | ✅ | `🗑️ AUTO-SPAM` při automatickém přesunu do koše |
 | OF body_text + přílohy | ✅ | `body_text[:1500]` + `file://` linky v note |
+| **decision_rules engine** (v2) | ✅ | `decision_engine.py`, 9 pravidel v DB, runs PŘED Llamou |
+| **Apple Contacts groups** (v2) | ✅ | `/contacts/all` JXA endpoint, hash check, 12h interval |
+| **RFC 5322 headers v ingestu** (v2) | ✅ | 13 hlaviček v `raw_payload.headers` |
+| **Threading** (v2 — schema) | ✅ | message_id, in_reply_to, thread_id sloupce |
+| **Threading TG flow** (v2 — UI) | ⏳ | endpointy ready, callbacks TODO |
+| **Pending queue worker** (v2) | ✅ | `pending_worker.py`, interval 1 min |
+| **Apple Bridge BUG-008 fix** (v2) | ✅ | `os.posix_spawn()` místo subprocess.run() |
+| **Per-TYP TG tlačítka** (v2) | ✅ | `notify_emails:_buttons_for_typ()` |
+| **Llama prompt 6 TYPů** (v2) | ✅ | ÚKOL/DOKLAD/NABÍDKA/NOTIFIKACE/POZVÁNKA/INFO |
+| **Decision rules group matching** | 🍎 BUG-009 | data ve 2 disjoint datasets, fix: rozšířit JXA o emails |
+| **Action wiring decision flagů** (v2) | ⏳ TODO | flagy z engine zatím ignorovány |
+| **Calendar reply / Mail send** (v2) | 🍎 BUG-010 | Mail.app neumí custom headers |
+| **Grafická spec sekce 19** (v2) | ✅ | CSS variables + třídy + email tabulka kostičky |
+| **CLS fix** (v2) | ✅ | display=optional + img dimensions |
 | `actions` tabulka — confirmation workflow | ❌ | tabulka existuje, kód nepoužívá |
 | iMessage ingest | ❌ | sqlite přístup znám, skript chybí |
 | Claude API — spam verifikace | ✅ | `_claude_verify_spam()` + `claude_sender_verdicts` cache |

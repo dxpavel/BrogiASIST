@@ -388,6 +388,106 @@ curl -sm 5 http://localhost:9100/health
 
 ---
 
+## BUG-009 — Group matching v decision_rules nefunguje (disjoint datasets v apple_contacts)
+
+**Severita:** HIGH (blokuje VIP/personal pravidla v decision_rules engine)
+**Zjištěno:** 2026-04-26 (blocker C verifikace)
+**Status:** OPEN — fix navržen, vyžaduje rozšíření JXA + cleanup starých záznamů
+
+### Popis
+Tabulka `apple_contacts` obsahuje **2360 řádků** ve dvou disjoint datasets:
+
+| Dataset | Počet | emails | groups | source_id format |
+|---|---|---|---|---|
+| Starý (DEV/MacBook ingest, před PROD migrací) | 1180 | ✅ má | ❌ nemá | `XXX:ABPerson` (MacBook ZUNIQUEID) |
+| Nový (PROD/Apple Studio JXA, 2026-04-26 19:06) | 1180 | ❌ prázdné `[]` | ✅ má (1138 ve skupinách) | `XXX:ABPerson` (Apple Studio ZUNIQUEID — JINÉ UUIDs!) |
+
+`person.id()` z JXA Contacts.app vrací stejný formát jako sqlite ZUNIQUEID,
+ale **lokální UUIDs jsou per-Mac unikátní** (i přes iCloud sync). ON CONFLICT
+matching přes `source_id` selhal → vznikly duplicity.
+
+### Důsledek
+Decision rules engine v `services/ingest/decision_engine.py:_eval_group()`
+dělá SQL JOIN:
+
+```sql
+SELECT groups FROM apple_contacts
+WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(emails) AS e
+              WHERE LOWER(e->>'value') = LOWER(<sender>))
+  AND jsonb_array_length(groups) > 0
+```
+
+**Žádný řádek v DB nemá současně neprázdné `emails` AND `groups`** → query
+nikdy nematchne → pravidla `group_vip` (priority 50) a `sender_personal`
+(priority 70) **nikdy netriggerují**, i když je sender v Pavlovo adresáři.
+
+### Návrh řešení
+1. Rozšířit JXA `/contacts/all` v `services/apple-bridge/main.py` o per-kontakt
+   `p.emails().map(...)` a `p.phones().map(...)` — bude pomalejší (1180 × 3
+   bridge calls = ~3 min, timeout zvýšit na 600s).
+2. SQL: `DELETE FROM apple_contacts WHERE ingested_at < '2026-04-26 19:06:00'`
+   — odstraní starý dataset (zůstane 1180 nových se kompletními daty).
+3. Trigger ingest manuálně: `docker exec -w /app brogiasist-scheduler python3 -c
+   'from ingest_apple_apps import ingest_contacts; ingest_contacts()'`
+4. Verify: `SELECT count(*) FROM apple_contacts WHERE jsonb_array_length(emails) > 0
+   AND jsonb_array_length(groups) > 0;` (musí > 0)
+
+Náročnost: ~2 h vč. testování.
+
+### Jak ověřit po opravě
+```bash
+# spustit standalone test decision engine na 25 reálných emailech
+docker cp services/ingest/test_decision.py brogiasist-scheduler:/app/
+docker exec -w /app brogiasist-scheduler python3 test_decision.py
+# výstup musí ukázat aspoň 1× 'group_vip' nebo 'sender_personal' v matched_rules
+```
+
+---
+
+## BUG-010 — Mail.app AppleScript neumí custom headers (X-Brogi-Auto)
+
+**Severita:** MEDIUM (blokuje D3+ implementaci `/calendar/reply` + `/mail/send`)
+**Zjištěno:** 2026-04-26 (blocker D3 audit)
+**Status:** OPEN — vyžaduje architektní rozhodnutí Pavla
+
+### Popis
+Per `docs/brogiasist-semantics-v1.md` sekce 13: bot odesílá Accept/Decline
+reply pozvánek a generic emails s headerem `X-Brogi-Auto: <action>`. IMAP
+filter na Sent folder pak ignoruje takto označené emaily (aby je bot zase
+neklasifikoval).
+
+**Apple's Mail.app AppleScript dictionary** ale neumožňuje nastavit custom
+headers při `make new outgoing message`. Properties co lze nastavit:
+`subject`, `content`, `sender`, `to recipients`, `cc recipients`, `visible`,
+`message signature`. **Žádná `headers` collection.**
+
+### Důsledek
+Implementace `/mail/send` endpointu v Apple Bridge má 3 možnosti, žádná
+ideální:
+
+| Workaround | Výhoda | Nevýhoda |
+|---|---|---|
+| **(a) Subject marker** `[BrogiASIST-auto:<action>]` na konec | snadná detekce v IMAP | zaplevelí subject pro příjemce |
+| **(b) Reply-To header** Mail.app to umí přes `with properties {reply to:...}` *(neověřeno)* | čistý subject | vyžaduje speciální mailbox `auto+brogi@dxpsolutions.cz` (setup) |
+| **(c) Body footer** `<!-- X-Brogi-Auto: <action> -->` na konec body | neviditelné v textových klientech | viditelné v plaintext, HTML klienti to vidí; ne 100% spolehlivé |
+| **(d) Direct SMTP** mimo Mail.app | full control nad headers | per-account SMTP credentials, není identický s Mail.app sent folder |
+
+### Návrh
+Pavel rozhodne mezi (a)/(b)/(c)/(d). Jakmile máme rozhodnutí:
+- 1–2 h implementace `/mail/send` endpointu v Apple Bridge
+- 1 h implementace `/calendar/reply` (vrstva nad `/mail/send` s ICS reply payload)
+- 30 min IMAP filter logic v `ingest_email.py` (skip pokud detekce auto-marker)
+
+### Jak ověřit po opravě
+1. Pavel klikne `📅 2cal+Accept` v TG na pozvánku → bot vytvoří calendar event
+   + odešle Accept reply pozvateli
+2. Bot reply skončí v Sent folderu — IMAP IDLE ho zachytí
+3. Ingest detekuje auto-marker → skip klasifikace (neuloží do `email_messages`
+   nebo uloží s `status='ignored'`)
+4. Pavel v dashboardu nevidí svůj vlastní reply jako nový k klasifikaci
+
+---
+
 ## Šablona pro nový bug
 
 ```markdown

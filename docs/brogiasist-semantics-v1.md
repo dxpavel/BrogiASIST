@@ -635,4 +635,70 @@ od: pavel.drexler@mbank.cz
 |---|---|
 | 2026-04-26 | v1.0 iniciální release |
 | 2026-04-26 | v1.1 doplněna sekce 19 (grafická semantika — kostičky / fill / kazeťák symboly) |
+| 2026-04-26 | v1.2 doplněna sekce 21 (implementační status na branch `2`) |
+
+---
+
+## 21. Implementační status na branch `2` (2026-04-26)
+
+> Detailní handoff pro pokračování: viz `docs/SESSION-HANDOFF-D-CONTINUATION.md`.
+
+### Hotovo ✅
+
+| Sekce spec | Implementace | Commit |
+|---|---|---|
+| 1. TYPy (6 z 9) | Llama prompt vrací ÚKOL/DOKLAD/NABÍDKA/NOTIFIKACE/POZVÁNKA/INFO | `7d11f75` |
+| 1. TYPy (3 z 9) | ERROR/LIST/ENCRYPTED detekuje decision_rules header check PŘED Llamou | `8ef45a7` |
+| 2. STATUS — schema | sloupce ready, hodnoty v kódu zatím legacy (`new`/`reviewed`) | `34a55c3` |
+| 3. ACTION — TG buttons | Per-TYP tlačítka v `_buttons_for_typ()`; callback_data backward compat (email:of:id) | `7d11f75` |
+| 4. Skupiny kontaktů (mapping) | Apple Bridge JXA vrací groups; DB sloupec `apple_contacts.groups` | `8622cb5`, `b267768` |
+| 5. Decision flow + Mermaid | Engine `decision_engine.py` + 9 pravidel v DB | `8ef45a7` |
+| 6. Schema rozšíření | `decision_rules`, `pending_actions`, threading sloupce v `email_messages` | `34a55c3`, `8ef45a7` |
+| 7. TG tlačítka per TYP | `notify_emails:_buttons_for_typ()` | `7d11f75` |
+| 8. Threading — schema | message_id, in_reply_to, thread_id sloupce + ingest plněn | `34a55c3` |
+| 9. Failure handling — queue | `pending_worker.py` + `drain_queue` job | `ed039b1` |
+| 10. Bot odesílá emaily | endpointy `/of/task/{id}/append_note`, `/notes/{id}/append` ready | `5ceb3d8`, `110883e` |
+| 11. Učení & Chroma | beze změn (existující `find_repeat_action` + `store_email_action`) | — |
+| 12. Llama prompt (500 znaků) | Body limit 400 → 500 | `7d11f75` |
+| 13. X-Brogi-Auto header | 🍎 BUG-010 — Mail.app neumí custom headers | OPEN |
+| 14. Quiet hours | „Pavel si ztiší telefon sám" — žádný kód | — |
+| 15. IMAP složky | beze změn (existující `BrogiASIST/HOTOVO`, `DOKLADY`, `NABIDKY`) | — |
+| 19. Grafická semantika | CSS variables + classes + email tabulka kostičky | `a851a30`, `9da5bd2` |
+
+### Zbývá ⏳ (před production v2)
+
+#### HIGH (block)
+
+| Bod | Co | Důvod |
+|---|---|---|
+| H1 — BUG-009 | Group matching v decision_rules — data ve 2 disjoint datasets | Fix: rozšířit JXA o emails + smazat starý dataset |
+| H2 — D5+ | Threading TG flow callbacks (`of_open`, `of_append` v telegram_callback) | Endpointy ready, chybí UI/handler logic |
+| H3 — D2 | Action wiring decision_rules flagů (`is_personal`, `force_tg_notify`, `no_auto_action`) | Flagy se zapisují, ale neaplikují v classify/notify pipeline |
+
+#### MEDIUM
+
+| Bod | Co | Důvod |
+|---|---|---|
+| M1 — BUG-010 | `/calendar/reply` + `/mail/send` Apple Bridge endpointy | Mail.app neumí custom headers → architektní rozhodnutí workaround |
+| M2 — sekce 3 | Akce `2undo` (TTL 1h) | Spec definuje, code chybí |
+| M3 — sekce 19 | STATUS kolečko v email tabulce | CSS classes ready, jen Jinja apply |
+| M4 — sekce 6 | WebUI editor pro `decision_rules` | Aktuálně edit jen přes SQL |
+
+#### LOW (cleanup)
+
+| Bod | Co |
+|---|---|
+| L1 | Refaktor `_save_classification` na nové STATUS hodnoty (NOVÝ/PŘEČTENÝ/...) místo legacy (`new`/`reviewed`) — Pavel rozhodl „nemigrujeme", ale nové emaily by měly do nového formátu |
+| L2 | Smazat `/contacts/all_sqlite` legacy endpoint pokud nikdy nepoužijeme |
+| L3 | Multi-action (1 email → víc akcí) — odloženo do v2 features |
+| L4 | Tag `v2.0` po dokončení H1+H2+H3 + merge `2` → main |
+
+### Změny realizované MIMO spec (2026-04-26)
+
+| Co | Důvod |
+|---|---|
+| BUG-008 fix `os.posix_spawn()` | macOS multi-threaded fork() crash — workaround #1 nefungoval |
+| `/contacts/all` přepsáno z sqlite na JXA | TCC FDA limitations pro launchd-spawned procesy (lessons sekce 36) |
+| Apple Contacts hash check + 12h interval | Ušetří 99 % DB writes při stabilních kontaktech |
+| Pavlovo rozhodnutí: nemigrujeme existující data | 25 emailů + 2360 kontaktů zůstane v starém formátu, nové v novém |
 

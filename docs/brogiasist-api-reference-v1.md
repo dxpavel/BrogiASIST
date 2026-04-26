@@ -100,3 +100,75 @@ if (hasBrogi) {
   return [{ json: { message, is_brogi: false } }];
 }
 ```
+
+---
+
+# Apple Bridge endpointy (Apple Studio :9100, branch `2` updated 2026-04-26)
+
+Apple Bridge na PajaAppleStudio (10.55.2.117) — FastAPI proxy nad Apple JXA/AppleScript.
+
+## GET `/health`
+Vrátí `{"ok": true, "ts": "..."}`.
+
+## OmniFocus
+
+### GET `/omnifocus/tasks`
+Vrátí `{ok, count, tasks: [{id, name, flagged, in_inbox, due_at, defer_at, modified_at, status}]}`.
+
+### GET `/omnifocus/projects`
+Seznam projektů s jejich stavy.
+
+### POST `/omnifocus/add_task`
+Body: `{name, note, flagged?, email_id?, files?: [{filename, content_base64, size_bytes}]}`.
+Vrátí `{ok, name, attach_method?, attach_errors?}`.
+
+### GET `/omnifocus/task/{task_id}` (NEW 2026-04-26)
+Fetch konkrétního OF tasku. Response: `{ok, task: {id, name, note, completed, flagged, in_inbox, due_at, defer_at, modified_at}}` nebo `{ok: false, error}`.
+
+### POST `/omnifocus/task/{task_id}/append_note` (NEW 2026-04-26)
+Body: `{text, separator?}` — append k OF notes. Response: `{ok, task_id, new_length}`.
+
+## Apple Notes
+
+### GET `/notes/all`
+Seznam Apple Notes notes.
+
+### POST `/notes/add`
+Body: `{name, body, folder?}`.
+
+### GET `/notes/{note_id}` (NEW 2026-04-26)
+Fetch konkrétní note. Response: `{ok, note: {id, name, body, creation_date, modification_date}}`.
+
+### POST `/notes/{note_id}/append` (NEW 2026-04-26)
+Body: `{text, separator?: true}` — HTML-safe append (escape `& < >`, `\n` → `<br/>`).
+
+## Apple Contacts (JXA, NEW 2026-04-26)
+
+### GET `/contacts/all`
+Vrátí kontakty + jejich skupiny přes JXA `Application('Contacts')`.
+Response: `{ok, count, contacts: [{id, first, last, org, modified_at, emails: [], phones: [], groups: [...]}]}`.
+
+⚠️ Trvá ~100s pro 1180 kontaktů. Klient potřebuje timeout 240s+.
+
+🍎 **BUG-009:** emails/phones zatím vynechané (per-property volání drahé) → fix po blockeru D5.
+
+### GET `/contacts/all_sqlite` (legacy fallback)
+Vyžaduje FDA — vrací `{ok: false, error: "no_fda"}` pokud Bridge nemá.
+
+## Apple Reminders
+
+### POST `/reminders/add`
+Body: `{name, body?, due_date?}`.
+
+### GET `/reminders/all`
+Seznam reminders.
+
+## Apple Calendar
+
+### GET `/calendar/events?days=N`
+Nadcházející události na N dní.
+
+### POST `/calendar/add`
+Body: `{title, start, end?, location?, notes?, calendar?}`.
+
+⏳ TODO `/calendar/reply` — Accept/Decline reply pro pozvánku (BUG-010 — Mail.app neumí custom headers).

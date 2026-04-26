@@ -707,6 +707,185 @@ mezera → %20
 
 ---
 
+## 35. macOS fork() bug v multi-threaded Python — `os.posix_spawn()` je jediný spolehlivý fix (2026-04-26)
+
+### Co se stalo
+Apple Bridge na PajaAppleStudio náhodně padal s `EXC_BAD_ACCESS (SIGSEGV)`
+v `Network.framework atfork hook` (cca 1× za 15 min, 2× za den). Stack trace:
+
+```
+*** multi-threaded process forked ***
+crashed on child side of fork pre-exec
+0  libsystem_trace      _os_log_preferences_refresh + 56
+2  libnetworkextension  NEFlowDirectorDestroy + 64
+4  Network              nw_settings_child_has_forked() + 296
+5  libsystem_pthread    _pthread_atfork_child_handlers + 76
+6  libsystem_c          fork + 112
+7  _posixsubprocess     do_fork_exec + 68
+```
+
+uvicorn (FastAPI) má vlákna; `subprocess.run()` volá `fork()`+`exec()`; v child
+po fork() Apple's atfork hooks (Network.framework) selhávají při refreshi
+log preferences → SIGSEGV.
+
+### Co nefungovalo
+- **Workaround #1**: env var `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` v launchd
+  plistu. Apple deprecated, na **macOS 26.4.1 ho ignoruje**. Nasazeno 19:33,
+  další crash o 15 minut později.
+- Restart `tccd`, restart Bridge — žádný efekt.
+
+### Proper fix (FUNGUJE)
+Nahradit `subprocess.run()` za `os.posix_spawn()` v `run_applescript`/`run_jxa`
+wrapperech v `services/apple-bridge/main.py`:
+
+```python
+def _spawn_osascript(args, timeout):
+    stdout_r, stdout_w = os.pipe()
+    stderr_r, stderr_w = os.pipe()
+    file_actions = [
+        (os.POSIX_SPAWN_DUP2, stdout_w, 1),
+        (os.POSIX_SPAWN_CLOSE, stdout_r),
+        (os.POSIX_SPAWN_DUP2, stderr_w, 2),
+        (os.POSIX_SPAWN_CLOSE, stderr_r),
+    ]
+    pid = os.posix_spawn('/usr/bin/osascript', args, os.environ, file_actions=file_actions)
+    # ... pipe read + waitpid
+```
+
+`posix_spawn()` je **atomický syscall** — nedělá fork() + exec() postupně,
+neprovádí kopii address space, **atfork hooks se nevolají** → bug se neprojeví.
+
+### Verifikace
+50 requestů na `/omnifocus/tasks` (5 paralelních osascript subprocesů),
+21 minut zátěže lokálně → **0 nových crash reportů**. Předtím by Bridge
+spadl několikrát.
+
+### Lekce
+- **Apple od macOS Catalina nedoporučuje fork() v multi-threaded apps.**
+  Pokud Python aplikace má threadpool (uvicorn/Flask) a volá subprocess,
+  riziko že atfork hooks zlomí child proces.
+- `OBJC_DISABLE_INITIALIZE_FORK_SAFETY` je **deprecated** — Apple ho v některém
+  release přestal honorovat (jistě v 26.x). Nespoléhat na něj.
+- `os.posix_spawn()` je Python 3.8+ řešení. Nízkoúrovňové (file_actions pro
+  pipes), ale spolehlivé.
+- Detail v `docs/BUGS.md` BUG-008.
+
+---
+
+## 36. macOS TCC (Full Disk Access) — launchd-spawned procesy NEDĚDÍ FDA z user FDA seznamu (2026-04-26)
+
+### Co se stalo
+Apple Bridge přes launchd potřeboval číst `~/Library/Application Support/AddressBook/`
+(Apple Contacts sqlite databáze) → `PermissionError: Operation not permitted`.
+
+Pavel přidal **Python.app do System Settings → Privacy & Security → Full Disk
+Access** (toggle ON, přesná cesta `/opt/homebrew/Cellar/python@3.11/3.11.15/...
+/Python.app`). Bridge restartován přes `launchctl unload + load`. **Stále
+PermissionError.**
+
+Sequence diagnostiky:
+- Smazat oba Python entries → re-add přes Cmd+Shift+G s přesnou cestou → restart Bridge → fail
+- `sudo killall tccd` (TCC daemon reset) → restart Bridge → **fail**
+- Změnit plist aby spouštěl Python přímo (bez bash run.sh wrapper) → fail
+
+### Příčina
+**TCC FDA permissions per-process zohledňují responsible parent app**, ne
+přímý executable. Pro launchd-spawned LaunchAgents je responsible parent =
+launchd (system process), který **nemá FDA**, a permission **se nedědí**
+z user FDA seznamu.
+
+Když Pavel spustil **stejný Python skript z Terminal.app** na Apple Studio
+(přes ssh + manuálně), permission projde — Terminal.app má FDA + ten Python
+proces je child Terminalu = dědí FDA.
+
+### Workaround / pivot
+**Apple Contacts má separátní permission "Automation" (AppleEvents)** —
+nezávislé na FDA. JXA volání `Application('Contacts').people()` projde přes
+Automation permission (Pavel dialog při prvním volání → Allow).
+
+Apple Bridge `/contacts/all` přepsán z `sqlite3` direct read na **JXA**:
+
+```python
+script = '''
+const contacts = Application('Contacts');
+contacts.includeStandardAdditions = false;
+const groupMap = {};
+for (let g of contacts.groups()) { ... }
+const people = contacts.people();
+// per kontakt: id, firstName, lastName, organization, groups[]
+'''
+contacts_data = run_jxa(script, timeout=240)
+```
+
+Trvá ~100s pro 1180 kontaktů (5x víc než sqlite), ale **nepotřebuje FDA**.
+
+### Lekce
+- Pro launchd-spawned procesy je **FDA cesta zlomená** na macOS 26.x. Pokud
+  Bridge potřebuje číst chráněné cesty (`~/Library/Application Support`,
+  `~/Library/Mail`, atp.), použít přes Apple-poskytnuté **AppleEvents API**
+  (Notes, Contacts, Calendar, Reminders, Mail, OmniFocus) — Apple je
+  spravuje přes "Automation" permission, kterou launchd-spawned procesy
+  získat můžou.
+- **Direct sqlite read** na chráněné DB **funguje JEN když process má FDA**
+  — což je bezpečné jen pro Terminal.app + child procesy. Bridge přes launchd
+  ne.
+- Apple Bridge nyní udržuje OBA endpointy: `/contacts/all` (JXA, primární)
+  a `/contacts/all_sqlite` (legacy fallback s `no_fda` graceful degrade).
+- Detail v `docs/BUGS.md` poznámkách k BUG-008 a v `services/apple-bridge/main.py`
+  komentářích.
+
+---
+
+## 37. JXA per-property volání jsou drahé — `properties()` batch + omezený scope (2026-04-26)
+
+### Co se stalo
+První implementace JXA `/contacts/all` volala per-kontakt:
+```js
+const props = {
+    id: p.id(),
+    first: p.firstName(),
+    last: p.lastName(),
+    org: p.organization(),
+    emails: p.emails().map(e => ({label: e.label(), value: e.value()})),
+    phones: p.phones().map(p => ({label: p.label(), value: p.value()})),
+    modified_at: p.modificationDate()?.toISOString(),
+    groups: groupMap[p.id()] || [],
+};
+```
+
+Pro 1180 kontaktů × ~10 bridge calls = **11 800 JXA bridge volání** → run_jxa
+timeout 90s nestačil, request timeoutoval po **101 sekundách s žádnou odpovědí**.
+
+### Optimalizace
+1. **Skupiny získat jako mapping** mimo per-person loop — 1× `contacts.groups()`,
+   per skupina 1× `g.people().map(p => p.id())`. Max 19 calls (počet skupin).
+2. **Per-kontakt jen 4 calls**: `id`, `firstName`, `lastName`, `organization`.
+   Vynechat: emails, phones, modificationDate (drahé, méně potřebné — máme
+   z dřívějších sqlite ingestů v PostgreSQL).
+3. **try/catch per kontakt** — některé kontakty mohou mít poškozená data
+   (např. `firstName` throws na deleted person), nezpůsobit fail celého requestu.
+4. **timeout 240s** v `run_jxa(script, timeout=240)` — bezpečná rezerva.
+
+Výsledek: 1180 kontaktů za **~101s** (5–6 OK, 21 fail — ne JXA, ale neúplná
+data v Contacts.app pro některé kontakty). Pro náš účel (groups jako
+orthogonal signál) dost dobré.
+
+### Lekce
+- **JXA bridge calls jsou drahé** (~50/s typicky). Pro batch operations
+  (1000+ záznamů) plánovat per-property volání pečlivě. Lépe:
+  - 1× `collection.<property>()` (vrátí array hodnot pro všechny záznamy)
+  - JOIN přes index (i v JS poli)
+- Per-property `whose()` queries v JXA jsou pomalé — `flattenedTasks.whose({completed: false})`
+  pro 466 OF tasků je rozumné (1× call), ale pro 1180 kontaktů × 10 properties už
+  je to limit.
+- Některé Contacts.app kontakty mají poškozená/chybějící data → `try/catch`
+  per záznam je nutné, jinak fail celé operace.
+- Kontaktové **emails/phones lze získat samostatným endpointem** (`/contacts/full?id=X`)
+  pokud potřebné — refresh on-demand.
+- Detail v `services/apple-bridge/main.py:contacts_all()`.
+
+---
+
 ## Co ještě nebylo řešeno / TODO
 
 - **iMessage ingest** — bridge endpoint naplánován, ingest skript a DB tabulka chybí
