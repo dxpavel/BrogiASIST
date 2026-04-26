@@ -104,7 +104,13 @@ def _save_offset(value: int) -> None:
 
 
 def _bridge_call(path: str, payload: dict, label: str, email_id: str) -> bool:
-    """Volá Apple Bridge; vrací True pokud uspěl. Loguje úspěch i chybu, posílá TG při selhání."""
+    """Volá Apple Bridge; vrací True pokud uspěl NEBO byl enqueue do pending_actions
+    (degraded mode pro Apple Bridge offline — viz pending_worker.py).
+
+    HTTP errory (4xx/5xx) → False + TG alert (server vrátil chybu, asi blbost v payload).
+    Connection errory (timeout, refused) → enqueue + True (Bridge offline, akce čeká
+    na drain worker, který ji zopakuje za < 1 min).
+    """
     import httpx as _httpx, os as _os
     bridge = _os.getenv("APPLE_BRIDGE_URL", "http://host.docker.internal:9100")
     try:
@@ -118,6 +124,24 @@ def _bridge_call(path: str, payload: dict, label: str, email_id: str) -> bool:
         except Exception:
             pass
         return False
+    except (_httpx.ConnectError, _httpx.ConnectTimeout, _httpx.ReadTimeout, _httpx.NetworkError) as e:
+        # Bridge unreachable — enqueue do pending_actions, drain worker to dorovná
+        try:
+            from pending_worker import enqueue
+            pid = enqueue(str(email_id), label.lower(), path, payload)
+            log.warning(f"{label} bridge offline → enqueued #{pid}: email_id={email_id} ({e})")
+            try:
+                send(f"⏳ <b>{label} ve frontě</b> (Apple Studio offline)\n<i>Pending #{pid} — proběhne automaticky až Bridge ožije.</i>")
+            except Exception:
+                pass
+            return True
+        except Exception as enq_err:
+            log.error(f"{label} enqueue failed: email_id={email_id} {enq_err}")
+            try:
+                send(f"❌ <b>{label} selhalo + enqueue selhal</b>\n<code>{str(e)[:200]}</code>")
+            except Exception:
+                pass
+            return False
     except Exception as e:
         log.error(f"{label} bridge error: email_id={email_id} {e}")
         try:
