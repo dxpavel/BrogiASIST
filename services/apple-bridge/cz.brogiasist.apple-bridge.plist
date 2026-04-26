@@ -9,6 +9,13 @@
         <string>/bin/bash</string>
         <string>/Users/pavel/SynologyDrive/001 DXP/009 BrogiASIST/services/apple-bridge/run.sh</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- macOS fork() bug v multi-threaded Python (uvicorn) — viz BUG-008 -->
+        <!-- Bez tohoto fixu Bridge náhodně padá na SIGSEGV v Network.framework atfork hook -->
+        <key>OBJC_DISABLE_INITIALIZE_FORK_SAFETY</key>
+        <string>YES</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>

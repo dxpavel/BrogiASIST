@@ -310,6 +310,79 @@ docker exec brogiasist_scheduler ls /app/attachments/   # ← kontejner storage,
 
 ---
 
+## BUG-008 — Apple Bridge náhodně padá v multi-threaded `fork()` (macOS bug)
+
+**Severita:** HIGH (každý crash = ztráta in-flight requestu na Apple Studio)
+**Zjištěno:** 2026-04-26 (PROD provoz)
+**Status:** FIXED 2026-04-26 (workaround #1)
+
+### Popis
+Apple Bridge na PajaAppleStudio (10.55.2.117, Python 3.11.15 + uvicorn) náhodně padá s `EXC_BAD_ACCESS (SIGSEGV)` — v jeden den dva crashe (18:17, 19:28). Crash report ukazuje:
+
+```
+*** multi-threaded process forked ***
+crashed on child side of fork pre-exec
+
+Thread 0 Crashed:
+0  libsystem_trace.dylib  _os_log_preferences_refresh + 56
+1  libsystem_trace.dylib  os_log_type_enabled + 772
+2  libnetworkextension.dylib  NEFlowDirectorDestroy + 64
+3  Network  nw_path_release_globals + 164
+4  Network  nw_settings_child_has_forked() + 296
+5  libsystem_pthread.dylib  _pthread_atfork_child_handlers + 76
+6  libsystem_c.dylib  fork + 112
+7  _posixsubprocess  do_fork_exec + 68
+8  _posixsubprocess  subprocess_fork_exec + 928
+```
+
+### Důsledek
+- Padá **child** proces po fork() → parent (uvicorn) přežije, launchd KeepAlive ho nerestartuje
+- Konkrétní HTTP request (např. `/omnifocus/tasks` přes osascript) selže s timeout/connection error na straně scheduleru
+- Apple Studio nemá log file (`~/Library/Logs/cz.brogiasist.apple-bridge.log` neexistuje)
+- Random behaviour: `/contacts/all` vrací 500, ostatní endpointy občas selžou
+
+### Příčina
+Apple od macOS Catalina nedoporučuje `fork()` v multi-threaded apps. uvicorn má vlákna, `subprocess.Popen` v handlerech volá `fork()`+`exec()`, v child procesu se Apple's `Network.framework` `nw_settings_child_has_forked()` atfork hook pokusí refreshnout `_os_log_preferences` a segfaultuje, protože v child memory není inicializovaný log subsystem.
+
+### Aplikované řešení (workaround #1)
+Do launchd plistu Apple Bridge přidána env proměnná `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`:
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+    <key>OBJC_DISABLE_INITIALIZE_FORK_SAFETY</key>
+    <string>YES</string>
+</dict>
+```
+
+Aplikováno na:
+- `~/Library/LaunchAgents/cz.brogiasist.apple-bridge.plist` na Apple Studio (in-place edit + `launchctl unload/load`)
+- `services/apple-bridge/cz.brogiasist.apple-bridge.plist` template v gitu (pro budoucí deployy)
+
+### Známé limitace fixu
+- Apple-deprecated workaround — může v budoucích macOS přestat fungovat (macOS 27+?)
+- **Pokud crashe pokračují**, eskalace na proper fix #3:
+  - `os.posix_spawn()` místo `subprocess.Popen` (1–2 h refactor)
+  - + `multiprocessing.set_start_method('spawn')` na startu
+
+### Jak ověřit po opravě
+```bash
+# Na Apple Studio
+ls -la ~/Library/Logs/DiagnosticReports/Python-*.ips
+# → po fixu by neměly přibývat nové crash reporty Pythonu
+
+# Verifikace plist obsahuje fix
+/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:OBJC_DISABLE_INITIALIZE_FORK_SAFETY' \
+  ~/Library/LaunchAgents/cz.brogiasist.apple-bridge.plist
+# → YES
+
+# Bridge musí běžet
+curl -sm 5 http://localhost:9100/health
+# → {"ok":true,"ts":"..."}
+```
+
+---
+
 ## Šablona pro nový bug
 
 ```markdown
