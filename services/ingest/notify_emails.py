@@ -35,6 +35,7 @@ UNIVERSAL_BUTTONS = [
         {"text": "⏳ Čeká",      "callback_data": "email:ceka:{id}"},
         {"text": "🗑️ Spam",     "callback_data": "email:spam:{id}"},
         {"text": "⏭️ Skip",     "callback_data": "email:skip:{id}"},
+        {"text": "🚫 Unsub",    "callback_data": "email:unsub:{id}"},
     ],
 ]
 

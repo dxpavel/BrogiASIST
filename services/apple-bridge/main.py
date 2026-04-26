@@ -172,22 +172,54 @@ JSON.stringify({{ok: true, name: {name_js}}});
 
 @app.post("/omnifocus/add_task")
 def omnifocus_add_task(body: dict):
-    """Přidá task do OmniFocus inboxu."""
-    name    = body.get("name", "") or ""
-    note    = body.get("note", "") or ""
-    flagged = "true" if body.get("flagged", False) else "false"
+    """Přidá task do OmniFocus inboxu. Volitelně přiloží soubory (file_paths)."""
+    name       = body.get("name", "") or ""
+    note       = body.get("note", "") or ""
+    flagged    = "true" if body.get("flagged", False) else "false"
+    file_paths = [p for p in (body.get("file_paths") or []) if p and os.path.exists(p)]
+
+    # Vždy přidej file:// linky do noty (spolehlivé)
+    if file_paths:
+        links = "\n".join(f"📎 file://{p.replace(' ', '%20')}" for p in file_paths)
+        note = (note + "\n\n─────\nPřílohy:\n" + links) if note else ("Přílohy:\n" + links)
+
     name_js = json.dumps(name)
     note_js = json.dumps(note)
+
+    # JXA blok pro přikládání souborů přes NSFileWrapper (experimentální, try/catch)
+    attach_js = ""
+    if file_paths:
+        paths_js = json.dumps(file_paths)
+        attach_js = f"""
+// Pokus o přiložení souborů do OmniFocus (try/catch — fallback je file:// v note)
+try {{
+  ObjC.import('Foundation');
+  const filePaths = {paths_js};
+  const inbox = doc.inboxTasks;
+  const t = inbox[inbox.length - 1];
+  filePaths.forEach(function(fp) {{
+    try {{
+      of2.make({{
+        new: 'fileAttachment',
+        at: t.attachments,
+        withProperties: {{file: Path(fp)}}
+      }});
+    }} catch(ae) {{}}
+  }});
+}} catch(e) {{}}
+"""
+
     script = f"""
 const of2 = Application('OmniFocus');
 const doc = of2.defaultDocument;
 const task = of2.Task({{name: {name_js}, note: {note_js}, flagged: {flagged}}});
 doc.inboxTasks.push(task);
+{attach_js}
 JSON.stringify({{ok: true, name: {name_js}}});
 """
     try:
         result = run_jxa(script)
-        return {"ok": True, "name": name}
+        return {"ok": True, "name": name, "attachments": len(file_paths)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

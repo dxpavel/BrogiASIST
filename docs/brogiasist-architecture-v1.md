@@ -1,6 +1,6 @@
 # BrogiASIST — Architecture Reference v1
 
-> Stav: 2026-04-25. DEV fáze. DB, ingest, WebUI, klasifikace, IMAP akce, TG callback funkční. AI learning přes ChromaDB. PROD deployment plánován.
+> Stav: 2026-04-25. DEV fáze. DB, ingest, WebUI, klasifikace, IMAP akce, TG callback funkční. AI learning přes ChromaDB. Třívrstvý spam filtr (Llama + kontakty + Claude). PROD deployment plánován.
 
 ---
 
@@ -63,8 +63,19 @@ Ingest scripts (scheduler / apple-bridge)
 PostgreSQL (mirror tables — email_messages, mantis_issues, …)
     │
     ▼
-Klasifikace (classify_emails.py — Llama3.2 + classification_rules)
-    │   firma / typ / task_status / is_spam → email_messages
+Klasifikace (classify_emails.py — třívrstvý spam filtr)
+  1. classification_rules — manuální pravidla (nejvyšší priorita, i nad kontakty)
+  2. POZVÁNKA pravidlo — subject ILIKE 'Invitation:%' → deterministicky, bez Llamy
+  3. apple_contacts whitelist — odesílatel v kontaktech → nikdy auto-spam
+  4. Llama3.2 → firma / typ / task_status / is_spam / confidence
+  5. Spam handling:
+     ├─ confidence ≥ 0.92 → auto trash + TG info "🗑️ AUTO-SPAM"
+     └─ confidence < 0.92 → Claude Haiku verifikace
+          ├─ cache hit (claude_sender_verdicts) → bez API volání
+          ├─ Claude spam=True → trash + TG info "🗑️ AUTO-SPAM Claude"
+          ├─ Claude spam=False → is_spam=False, normální průchod
+          └─ Claude error → fallback TG spam-check
+    │
     ▼
 Decide:
   ├─ AI auto-akce  (chroma_client.find_repeat_action — pattern match nad email_actions)
@@ -75,6 +86,7 @@ Execute  (imap_actions.py)
   • mark_read           → IMAP STORE (\Seen) + UPDATE email_messages.status='reviewed'
   • move_to_trash       → IMAP MOVE → Trash + UPDATE folder
   • move_to_brogi_folder → IMAP MOVE → BrogiASIST/<typ> + UPDATE folder
+  • of                  → Apple Bridge /omnifocus/add_task (body_text[:1500] + přílohy)
     │
     ▼
 Learning  (chroma_client.store_email_action)
@@ -87,6 +99,8 @@ Learning  (chroma_client.store_email_action)
 - Po každé akci se volá `chroma_client.store_email_action()` → embedding + metadata do ChromaDB pro learning.
 - `find_repeat_action()` před notifikací: pokud ≥3 podobné emaily (cosine ≤0.15) měly stejnou akci → automatická exekuce bez TG potvrzení.
 - **Pořadí v `_email_action`**: bridge call → DB UPDATE + COMMIT → IMAP move. Nikdy IMAP před commitem — způsobuje row-level lock contention (druhá conn blokuje na UPDATE stejného řádku). Viz lesson #23.
+- **Claude sender cache**: každý odesílatel je verifikován přes Claude API maximálně jednou. Výsledek v `claude_sender_verdicts` (PRIMARY KEY = email adresa).
+- **Kontakt priorita**: classification_rules (manuální) > apple_contacts (whitelist) > Llama AI.
 
 **Pozn.: dead/reserved schémata** (existují v DB, kód je nepoužívá):
 - `actions` tabulka — rezervována pro budoucí confirmation workflow (pending → confirmed → executed). Aktuálně 0 záznamů.
@@ -180,6 +194,14 @@ Klíčové parametry: `KeepAlive: true`, `RunAtLoad: true`.
 |---|---|---|
 | `email_actions` | Učení pattern → akce (mark_read, hotovo, spam, …). Po každé akci `store_email_action()`. | Ollama `nomic-embed-text`, cosine space |
 
+### WebUI — `/chroma` stránka (dashboard)
+- Zobrazuje všechny záznamy v ChromaDB collection `email_actions`
+- Filtry: odesílatel (text), akce (dropdown), typ (dropdown)
+- Inline editace akce (dropdown + 💾)
+- Smazání záznamu (🗑 + confirm dialog)
+- Klient-side paginace (25 záznamů na stránku), všechna data načtena najednou
+- API: `GET /chroma`, `PATCH /api/chroma/{id}`, `DELETE /api/chroma/{id}`
+
 ---
 
 ## Email Accounts (8 sledovaných + 1 v náběhu)
@@ -256,12 +278,24 @@ docker exec brogi_scheduler python backfill_mark_read.py
 
 ## Planned (not yet implemented)
 
-- AI analysis layer plný (Ollama analytical layer + Claude API online) — klasifikace běží, ale plná analýza ne
-- Rules table — learned classification rules (auto-přidávání pravidel z opakovaných akcí)
 - iMessage ingest (bridge endpoint planned, ingest script chybí)
 - WebUI source management (přidání/edit účtů přes UI)
 - PROD deployment — BrogiServer (Apple Studio)
-- zamecnictvi@gmail.com (App Password získán, účet pod jménem `zamecnictvi.rozdalovice@gmail.com`)
 - Topic intersections UI (v admin formuláři chybí)
 - `actions` tabulka — confirmation workflow (pending → confirmed → executed)
 - Apple Bridge notes/add JXA escape bug (speciální znaky → SyntaxError 500; fix: json.dumps)
+- Claude API — rozšíření na plnou analýzu (nejen spam verifikace)
+- Auto-přidávání classification_rules z opakovaných korekcí
+
+## Implementováno v 2026-04 (tato session)
+
+- **POZVÁNKA pravidlo** — deterministická detekce Google Calendar pozvánek (`subject ILIKE 'Invitation:%'`), bez Llamy
+- **Apple Contacts whitelist** — `_is_contact()` v `classify_emails.py`; odesílatel v kontaktech → nikdy auto-spam; manuální pravidla mají vyšší prioritu
+- **Claude spam verifikace** — `_claude_verify_spam()` voláno když Llama označí spam s confidence < 0.92; model `claude-haiku-4-5` přes Anthropic API (httpx, bez SDK)
+- **Claude sender cache** — `claude_sender_verdicts` tabulka (email PK); každý odesílatel verifikován Claudem maximálně jednou
+- **TG auto-spam notifikace** — `🗑️ AUTO-SPAM (X%)` zpráva na TG při automatickém přesunu do koše (Llama jistý nebo Claude potvrdil)
+- **Unsub tlačítko v TG** — přidáno do UNIVERSAL_BUTTONS v `notify_emails.py`
+- **OF body + přílohy** — `telegram_callback.py`: OF task obsahuje `body_text[:1500]` + přílohy jako `file://` linky v note; pokus o `NSFileWrapper` attach (try/catch)
+- **Attachment bind mount** — `/Users/pavel/Desktop/OmniFocus:/app/attachments` v docker-compose.yml
+- **ChromaDB WebUI** — `/chroma` stránka v dashboardu (čtení, editace, mazání vzorů)
+- **Chroma cleanup** — smazány spam záznamy pro odesílatele v apple_contacts (13 záznamů), Lahoda 3 záznamy ručně

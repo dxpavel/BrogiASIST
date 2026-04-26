@@ -521,9 +521,106 @@ AI (Llama3.2) nemá v seznamu typů `POZVÁNKA` ani `KALENDÁŘ`. Vidí slovo *I
 
 ---
 
+---
+
+## 27. Claude API — httpx bez SDK (2026-04-25)
+
+### Situace
+Potřebujeme volat Anthropic API z Docker kontejneru kde není nainstalován `anthropic` Python SDK (není v requirements.txt). Přidání SDKs vyžaduje rebuild image.
+
+### Řešení
+Volání přes `httpx` (již dostupný):
+```python
+r = httpx.post(
+    "https://api.anthropic.com/v1/messages",
+    headers={
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    },
+    json={"model": "claude-haiku-4-5", "max_tokens": 128,
+          "messages": [{"role": "user", "content": prompt}]},
+    timeout=30,
+)
+text = r.json()["content"][0]["text"]
+```
+Response text pak parsuj jako JSON (find `{` / rfind `}`) stejně jako u Llamy.
+
+### Env proměnná
+`ANTHROPIC_API_KEY` musí být v `.env` — scheduler používá `env_file: .env`.
+**Pozor**: `docker restart` nepřečte `.env` znovu — nutný `docker compose up -d --force-recreate scheduler`.
+Po force-recreate se ztratí všechny `docker cp` soubory — nutné znovu zkopírovat!
+
+---
+
+## 28. docker compose force-recreate maže docker cp soubory (2026-04-25)
+
+### Situace
+Po `docker compose up -d --force-recreate scheduler` se kontejner vytvoří znovu z původního image.
+Všechny soubory nakopírované přes `docker cp` se ztratí — kontejner má čistý stav z image.
+
+### Pravidlo
+Pořadí musí být vždy:
+1. `docker compose up -d --force-recreate scheduler` (kvůli env_file)
+2. `docker cp <soubor> brogi_scheduler:/app/<soubor>` (pro každou změnu)
+
+Nebo lépe: přidat bind mount `./services/ingest:/app` do docker-compose.yml (pak stačí `restart`).
+
+---
+
+## 29. ChromaDB — editace záznamu vyžaduje delete + upsert (2026-04-25)
+
+### Situace
+ChromaDB HTTP API neumí editovat metadata existujícího záznamu bez přepsání embeddingu.
+
+### Řešení
+1. `GET /collections/{col_id}/get` s `ids=[id]` a `include=["embeddings","documents","metadatas"]`
+2. Extrahuj embedding + document
+3. `POST /collections/{col_id}/delete` s `ids=[id]`
+4. `POST /collections/{col_id}/upsert` se stejným embedding + document + nová metadata
+
+Pokud chybí embedding v responsi, zkontroluj `include` parametr — default nemusí vrátit embeddingy.
+
+---
+
+## 30. UPSERT v PostgreSQL — detekce INSERT vs UPDATE (2026-04-25)
+
+### Situace
+Chceme vědět jestli UPSERT vytvořil nový záznam nebo jen aktualizoval existující.
+
+### Řešení
+```sql
+INSERT INTO email_messages (...)
+VALUES (...)
+ON CONFLICT (source_id) DO UPDATE SET ...
+RETURNING id, (xmax = 0) AS is_new
+```
+- `xmax = 0` → nový INSERT
+- `xmax != 0` → UPDATE existujícího záznamu
+
+---
+
+## 31. apple_contacts — prázdné emails[] pole (2026-04-25)
+
+### Situace
+Kontakt Lukáš Lahoda má v `apple_contacts` tabulce `emails: []` (prázdné pole).
+`_is_contact()` dotaz matchuje pouze kontakty s neprázdnými emails.
+Výsledek: Lahoda nebyl zachycen automatickým whitelistem.
+
+### Příčina
+AddressBook sqlite může mít kontakty bez emailové adresy (pouze telefonní číslo, nebo email uložen jinak v iCloud).
+
+### Dopad
+Auto-cleanup Chroma spam záznamů přeskočil Lahodu.
+Tři Lahoda spam záznamy musely být smazány ručně přes Chroma HTTP API.
+
+### Řešení (budoucí)
+Zvažit rozšíření `_is_contact()` o fuzzy match na jméno (first_name + last_name), pokud je emails[] prázdný.
+
+---
+
 ## Co ještě nebylo řešeno / TODO
 
-- **AI analysis layer** — Ollama (local) + Claude API (online); klasifikace běží, ale plná analýza ne
 - **iMessage ingest** — bridge endpoint naplánován, ingest skript a DB tabulka chybí
 - **Calendar Full Disk Access na PROD** — na BrogiServer (Apple Studio) bude potřeba explicitně udělit Full Disk Access pro bridge proces
 - **ChromaDB query layer** — `find_repeat_action` běží před notifikací; další vektorové vyhledávání (semantic search nad maily) zatím nepoužito
@@ -532,4 +629,6 @@ AI (Llama3.2) nemá v seznamu typů `POZVÁNKA` ani `KALENDÁŘ`. Vidí slovo *I
 - **`actions` tabulka** — confirmation workflow (pending → confirmed → executed) není implementován; tabulka je placeholder
 - **`email_messages.processed_at`** — dead column; buď začít zapisovat při akci, nebo dropnout při příští migraci
 - **Apple Bridge notes/add JXA** — escaping speciálních znaků v body textu; Python f-string interpolace rozbije JS string → SyntaxError 500. Opravit pomocí `json.dumps(body)`.
-- **docker-compose bind mount** — přidat `./services/ingest:/app` volume pro scheduler (jinak `docker cp` po každé změně)
+- **docker-compose bind mount** — přidat `./services/ingest:/app` volume pro scheduler (jinak `docker cp` + force-recreate po každé změně env)
+- **claude_sender_verdicts** — zatím bez TTL / expiry; verdikt může být zastaralý pokud se odesílatel změní z legitimního na spam. Zvážit `verified_at < NOW() - INTERVAL '90 days'` jako refresh trigger.
+- **apple_contacts kontakty bez emailu** — `_is_contact()` nefunguje pro kontakty s prázdným emails[]. Zvážit fallback na jméno.

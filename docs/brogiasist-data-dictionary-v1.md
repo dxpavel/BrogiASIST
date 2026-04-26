@@ -18,18 +18,29 @@ ZDROJ (IMAP / RSS / YouTube / Mantis / Apple apps)
   ▼ INGEST (scheduler / apple-bridge)
 raw kopie → PostgreSQL (mirror tabulka)
   │
-  ▼ KLASIFIKACE (classify_emails.py — email; topics/signals — obsah)
-Vrstva 1: classification_rules (deterministická, bez AI)
-Vrstva 2: Llama3.2 přes Ollama (pokud pravidlo chybí)
+  ▼ KLASIFIKACE (classify_emails.py — třívrstvý spam filtr)
+  1. classification_rules (manuální pravidla — nejvyšší priorita, i nad kontakty)
+  2a. POZVÁNKA pravidlo — subject ILIKE 'Invitation:%' → bez Llamy
+  2b. spam pravidla z classification_rules → trash
+  2c. apple_contacts whitelist — odesílatel v kontaktech → blokuje AI spam
+  3. Llama3.2 přes Ollama → firma / typ / task_status / is_spam / confidence
+  4. Kontakt override: in_contacts AND is_spam → is_spam=False
+  5. Spam handling:
+     ├─ confidence ≥ 0.92 → auto trash + TG "🗑️ AUTO-SPAM"
+     └─ confidence < 0.92 → Claude Haiku verifikace (claude_sender_verdicts cache)
+          ├─ spam=True → trash + TG "🗑️ AUTO-SPAM Claude"
+          ├─ spam=False → is_spam=False, normální průchod
+          └─ error → fallback TG spam-check
   │
   ▼ DECIDE
 Auto-akce: chroma_client.find_repeat_action (≥3 podobné, cosine ≤0.15)
 Human review: notify_emails.py → Telegram inline tlačítka
   │
   ▼ EXECUTE (telegram_callback.py / api.py / classify_emails.py)
-hotovo / přečteno / spam / of / rem / note / unsub / skip
+hotovo / přečteno / spam / of / rem / note / unsub / skip / cal
   │  imap_actions: mark_read | move_to_trash | move_to_brogi_folder
   │  DB update: folder, status='reviewed', human_reviewed=TRUE
+  │  of: Apple Bridge /omnifocus/add_task (body_text[:1500] + file:// přílohy)
   │
   ▼ LEARN
 chroma_client.store_email_action → ChromaDB collection "email_actions"
@@ -320,6 +331,41 @@ Indexy: `(source_type, source_id)`, `status`
 
 ---
 
+### `claude_sender_verdicts` (2026-04-25)
+
+Cache výsledků Claude verifikace spamu — jeden záznam na odesílatele.
+
+| Sloupec | Typ | Popis |
+|---|---|---|
+| `email` | TEXT PK | čistá emailová adresa (bez display name) |
+| `is_spam` | BOOLEAN | verdikt Claude |
+| `reason` | TEXT | 1 věta vysvětlení |
+| `verified_at` | TIMESTAMP | kdy verifikováno |
+
+**Použití:** `_claude_verify_spam()` v `classify_emails.py` — nejdřív zkontroluje cache, API volá jen při cache miss. UPSERT při opakovaném volání (přepíše starý verdikt).
+
+---
+
+### `attachments` (migrace — existuje v DB)
+
+Reference na soubory příloh emailů uložených na disku.
+
+| Sloupec | Typ | Popis |
+|---|---|---|
+| `id` | UUID PK | |
+| `source_type` | VARCHAR | `email` |
+| `source_record_id` | UUID | FK → `email_messages.id` (::uuid cast nutný v dotazu) |
+| `filename` | VARCHAR | bezpečný název souboru |
+| `file_path` | TEXT | cesta v kontejneru (`/app/attachments/...`) |
+| `mac_path` | TEXT | cesta na Mac hostu (`/Users/pavel/Desktop/OmniFocus/...`) |
+| `content_type` | VARCHAR | MIME type |
+| `size_bytes` | BIGINT | velikost |
+| `saved_at` | TIMESTAMPTZ | |
+
+**Bind mount:** `/Users/pavel/Desktop/OmniFocus:/app/attachments` — scheduler zapisuje, Apple Bridge čte přes mac_path.
+
+---
+
 ### `classification_rules` (migrace 008)
 
 | Sloupec | Typ | Popis |
@@ -449,25 +495,34 @@ launchctl load   ~/Library/LaunchAgents/cz.brogiasist.apple-bridge.plist
 Nový email (IMAP IDLE push)
   │
   ▼
-email_messages INSERT (status='new')
+email_messages INSERT (status='new') + přílohy → attachments tabulka + disk
   │
   ▼ classify_emails.py (každých 5 min)
-1. Zkontroluj classification_rules (deterministické — from_address, subject_contains, domain)
-   → shoda: ulož firma/typ bez Llama
-2. Žádné pravidlo → POST Ollama llama3.2-vision:11b
-   → výstup JSON: firma, typ, task_status, is_spam, confidence, reason
-3. Ulož, nastav status='classified', human_reviewed=FALSE
-4. Auto-spam: ai_confidence > 0.92 → is_spam=TRUE + move_to_trash + store_email_action(spam)
+1. classification_rules — from_address shoda (manuální pravidla; spam → trash, continue)
+2a. POZVÁNKA pravidlo — subject ILIKE 'Invitation:%' → typ=POZVÁNKA, bez Llamy, continue
+2b. apple_contacts whitelist — in_contacts=True → blokuje AI spam (pravidla ho přepíší)
+3. Llama3.2 → JSON: firma, typ, task_status, is_spam, confidence, reason
+4. Kontakt override: if in_contacts AND is_spam → is_spam=False
+5. _save_classification (status='classified')
+6. Spam handling:
+   ├─ is_spam AND confidence ≥ 0.92 → move_to_trash + TG "🗑️ AUTO-SPAM (X%)"
+   └─ is_spam AND confidence < 0.92 → _claude_verify_spam()
+        ├─ cache hit (claude_sender_verdicts) → žádné API volání
+        ├─ cache miss → Claude Haiku API → INSERT claude_sender_verdicts
+        ├─ claude.is_spam=True → move_to_trash + TG "🗑️ AUTO-SPAM Claude [cache] (X%)"
+        ├─ claude.is_spam=False → _save_classification(is_spam=False), normální průchod
+        └─ claude=None (error) → send_spam_check (TG spam-check s tlačítky)
+7. Auto-move: confidence ≥ 0.85 AND typ IN (NOTIFIKACE,NEWSLETTER,ESHOP,POTVRZENÍ,FAKTURA)
+   → move_to_brogi_folder(<typ>)
   │
   ▼ notify_emails.py (každé 2 min)
 SELECT WHERE typ IS NOT NULL AND is_spam=FALSE AND tg_notified_at IS NULL
   │
   ▼ Před TG zprávou: chroma_client.find_repeat_action(from, subject, body)
   │   → pokud match: provede akci automaticky (mark_read / hotovo / move / …)
-  │   → store_email_action po akci (zvyšuje pattern strength)
-  │   → tg_notified_at se nenastavuje (nebyla žádná notifikace)
+  │   → store_email_action po akci + TG "🔁 Opakuji akci: X"
   │
-  ▼ Pokud žádný pattern: pošli TG zprávu s inline tlačítky (dle typu emailu)
+  ▼ Pokud žádný pattern: pošli TG zprávu s inline tlačítky
 → nastav tg_notified_at=NOW(), tg_message_id=<msg_id>
   │
   ▼ telegram_callback.py (polling každé 2s — daemon thread)
@@ -476,9 +531,10 @@ Zpracuj kliknutí:
   precteno → move_to_brogi_folder(<typ>) + status='reviewed' + human_reviewed=TRUE
   ceka     → task_status='ČEKÁ-NA-MĚ', human_reviewed=TRUE (zůstává v INBOX)
   spam     → is_spam=TRUE + move_to_trash + INSERT classification_rules (from_address)
-  of       → POST apple-bridge /omnifocus/add_task (flagged=TRUE) + move_to_brogi_folder(HOTOVO)
+  of       → POST apple-bridge /omnifocus/add_task (flagged=TRUE, note=body_text[:1500]+přílohy) + move_to_brogi_folder(HOTOVO)
   rem      → POST apple-bridge /reminders/add + move_to_brogi_folder(HOTOVO)
   note     → POST apple-bridge /notes/add + move_to_brogi_folder(HOTOVO)
+  cal      → POST apple-bridge /calendar/add + move_to_brogi_folder(HOTOVO)
   unsub    → is_spam=TRUE pro celý from_address + classification_rules INSERT + move_to_trash
   skip     → jen answer_callback, nic nemění
   │
@@ -495,6 +551,7 @@ Zpracuj kliknutí:
 - `email:of:{id}`
 - `email:rem:{id}`
 - `email:note:{id}`
+- `email:cal:{id}`
 - `email:unsub:{id}`
 - `email:skip:{id}`
 - `spam:yes:{id}` (legacy)
@@ -538,9 +595,13 @@ topic_signals (keyword seznam)
 - Výstup: JSON s `firma` / `typ` / `task_status` / `is_spam` / `confidence` / `reason`
 - Auto-spam threshold: `confidence > 0.92` → označí bez TG notifikace
 
-### Vrstva 3 — plánováno
-- Claude API pro složité případy (nízká confidence, nový typ)
-- Topics/signals kontext vložen do promptu
+### Vrstva 3 — Claude Haiku (spam verifikace)
+- Model: `claude-haiku-4-5` přes Anthropic API (httpx, bez SDK)
+- URL: `https://api.anthropic.com/v1/messages`
+- Nastupuje pokud Llama označí spam s `confidence < 0.92`
+- **Cache**: `claude_sender_verdicts` — každý odesílatel verifikován max. jednou
+- Výstup: `{"is_spam": bool, "reason": "1 věta"}`
+- Fallback: pokud API selže → TG spam-check (neztrácíme email)
 
 ---
 
@@ -611,7 +672,14 @@ topic_signals (keyword seznam)
 | IMAP akce (move, mark read) | ✅ | `imap_actions.py` — mark_read, move_to_trash, move_to_brogi_folder |
 | Backfill skripty (retroaktivní akce) | ✅ | `backfill_imap.py`, `backfill_mark_read.py`, `backfill_spam_read.py` |
 | ChromaDB action learning | ✅ | `store_email_action` + `find_repeat_action` (pattern → auto-akce) |
+| ChromaDB WebUI `/chroma` | ✅ | čtení, inline edit, mazání vzorů |
 | ChromaDB semantic search | ❌ | plánováno (mimo find_repeat_action zatím nepoužito) |
+| Apple Contacts whitelist | ✅ | `_is_contact()` — odesílatel v kontaktech → nikdy auto-spam |
+| POZVÁNKA deterministické pravidlo | ✅ | `subject ILIKE 'Invitation:%'` → bez Llamy |
+| TG Unsub tlačítko | ✅ | přidáno do UNIVERSAL_BUTTONS |
+| TG auto-spam notifikace | ✅ | `🗑️ AUTO-SPAM` při automatickém přesunu do koše |
+| OF body_text + přílohy | ✅ | `body_text[:1500]` + `file://` linky v note |
 | `actions` tabulka — confirmation workflow | ❌ | tabulka existuje, kód nepoužívá |
 | iMessage ingest | ❌ | sqlite přístup znám, skript chybí |
-| Claude API vrstva | ❌ | plánováno |
+| Claude API — spam verifikace | ✅ | `_claude_verify_spam()` + `claude_sender_verdicts` cache |
+| Claude API — plná analýza | ❌ | plánováno |

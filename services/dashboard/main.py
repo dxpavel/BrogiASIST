@@ -592,3 +592,144 @@ async def fetch_now():
             return r.json()
     except Exception as e:
         return JSONResponse(status_code=502, content={"status": "error", "detail": str(e)})
+
+
+# ─────────────────────────────────────────
+#  CHROMA — naučené vzory
+# ─────────────────────────────────────────
+
+_CHROMA_BASE = f"http://{CHROMA_HOST}:{CHROMA_PORT}/api/v2/tenants/default_tenant/databases/default_database"
+_CHROMA_COL_NAME = "email_actions"
+_chroma_col_id_cache: str | None = None
+
+
+async def _chroma_col_id() -> str:
+    global _chroma_col_id_cache
+    if _chroma_col_id_cache:
+        return _chroma_col_id_cache
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(f"{_CHROMA_BASE}/collections/{_CHROMA_COL_NAME}")
+        r.raise_for_status()
+        _chroma_col_id_cache = r.json()["id"]
+        return _chroma_col_id_cache
+
+
+async def _chroma_get(offset: int = 0, limit: int = 25) -> dict:
+    col_id = await _chroma_col_id()
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            f"{_CHROMA_BASE}/collections/{col_id}/get",
+            json={"limit": limit, "offset": offset, "include": ["metadatas", "documents"]},
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+async def _chroma_count() -> int:
+    col_id = await _chroma_col_id()
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(f"{_CHROMA_BASE}/collections/{col_id}/count")
+        r.raise_for_status()
+        return int(r.json())
+
+
+async def _chroma_get_all(limit: int = 500) -> dict:
+    """Načte všechny záznamy najednou (pro JS filtrování)."""
+    col_id = await _chroma_col_id()
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(
+            f"{_CHROMA_BASE}/collections/{col_id}/get",
+            json={"limit": limit, "offset": 0, "include": ["metadatas", "documents"]},
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@app.get("/chroma", response_class=HTMLResponse)
+async def page_chroma(request: Request):
+    try:
+        total = await _chroma_count()
+        data  = await _chroma_get_all(min(total + 10, 500))
+        ids   = data.get("ids", []) or []
+        metas = data.get("metadatas", []) or []
+        records = []
+        for i, rec_id in enumerate(ids):
+            meta = metas[i] if i < len(metas) else {}
+            ts = (meta.get("timestamp", "") or "")[:10]
+            records.append({
+                "id":       rec_id,
+                "from_addr": meta.get("from_addr", ""),
+                "subject":  meta.get("subject", ""),
+                "action":   meta.get("action", ""),
+                "typ":      meta.get("typ", ""),
+                "mailbox":  (meta.get("mailbox", "") or "").split("@")[0],
+                "human":    bool(meta.get("human_corrected", False)),
+                "ts":       ts,
+            })
+        # Unikátní hodnoty pro filtry
+        actions = sorted(set(r["action"] for r in records if r["action"]))
+        typy    = sorted(set(r["typ"]    for r in records if r["typ"]))
+    except Exception as e:
+        records, total, actions, typy = [], 0, [], []
+    return templates.TemplateResponse("chroma.html", {
+        "request": request, "records": records,
+        "total": total, "actions": actions, "typy": typy,
+    })
+
+
+@app.delete("/api/chroma/{record_id}")
+async def api_chroma_delete(record_id: str):
+    try:
+        col_id = await _chroma_col_id()
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                f"{_CHROMA_BASE}/collections/{col_id}/delete",
+                json={"ids": [record_id]},
+            )
+            r.raise_for_status()
+        return {"ok": True}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "detail": str(e)})
+
+
+@app.patch("/api/chroma/{record_id}")
+async def api_chroma_edit(record_id: str, body: dict):
+    """Změní action záznamu: načte embedding, smaže, znovu uloží s novou akcí."""
+    new_action = body.get("action", "").strip()
+    if not new_action:
+        raise HTTPException(status_code=422, detail="action required")
+    try:
+        col_id = await _chroma_col_id()
+        async with httpx.AsyncClient(timeout=15) as client:
+            # Načti záznam včetně embeddingu
+            r = await client.post(
+                f"{_CHROMA_BASE}/collections/{col_id}/get",
+                json={"ids": [record_id], "include": ["metadatas", "documents", "embeddings"]},
+            )
+            r.raise_for_status()
+            data = r.json()
+            if not data.get("ids"):
+                raise HTTPException(status_code=404, detail="záznam nenalezen")
+            meta      = data["metadatas"][0]
+            doc       = data["documents"][0]
+            embedding = data["embeddings"][0]
+            # Uprav action v metadatech
+            meta["action"] = new_action
+            meta["human_corrected"] = True
+            # Smaž starý
+            await client.post(
+                f"{_CHROMA_BASE}/collections/{col_id}/delete",
+                json={"ids": [record_id]},
+            )
+            # Vlož nový se stejným ID a embeddingem
+            r2 = await client.post(
+                f"{_CHROMA_BASE}/collections/{col_id}/upsert",
+                json={"ids": [record_id], "embeddings": [embedding],
+                      "documents": [doc], "metadatas": [meta]},
+            )
+            r2.raise_for_status()
+        return {"ok": True, "action": new_action}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "detail": str(e)})

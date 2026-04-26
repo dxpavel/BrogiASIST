@@ -212,16 +212,28 @@ def _email_action(email_id: str, action: str):
         imap_op = ("trash",)
     elif action == "of":
         conn = get_conn(); cur = conn.cursor()
-        cur.execute("SELECT subject, from_address FROM email_messages WHERE id=%s", (email_id,))
+        cur.execute("SELECT subject, from_address, body_text FROM email_messages WHERE id=%s", (email_id,))
         row = cur.fetchone()
-        cur.close(); conn.close()
         if not row:
-            return
-        subject, from_addr = row
+            cur.close(); conn.close(); return
+        subject, from_addr, body_text = row
+        # Přílohy uložené na disku (Mac cesta pro Apple Bridge)
+        cur.execute(
+            "SELECT storage_path FROM attachments WHERE source_type='email' AND source_record_id=%s::uuid ORDER BY filename",
+            (email_id,)
+        )
+        file_paths = [r[0] for r in cur.fetchall()]
+        cur.close(); conn.close()
+        body_preview = (body_text or "")[:1500].strip()
+        note = f"Od: {from_addr}\n"
+        if body_preview:
+            note += f"\n{body_preview}\n"
+        note += f"\n─────\nBrogiASIST id: {email_id}"
         ok = _bridge_call("/omnifocus/add_task", {
             "name": subject or "(bez předmětu)",
-            "note": f"Od: {from_addr}\nBrogiASIST email id: {email_id}",
+            "note": note,
             "flagged": True,
+            "file_paths": file_paths,
         }, "OF", str(email_id))
         if not ok:
             return

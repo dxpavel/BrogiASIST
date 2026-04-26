@@ -1,13 +1,14 @@
 """
-BrogiASIST — Email klasifikace přes Llama3.2 + pravidla
+BrogiASIST — Email klasifikace přes Llama3.2 + Claude verifikace + pravidla
 """
 import os
 import re
 import json
 import logging
 import httpx
+from html import escape as html_escape
 from db import get_conn
-from telegram_notify import send_spam_check
+from telegram_notify import send_spam_check, send as tg_send
 from imap_actions import move_to_trash, move_to_brogi_folder, TYP_FOLDER
 
 log = logging.getLogger(__name__)
@@ -15,6 +16,8 @@ log = logging.getLogger(__name__)
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
 MODEL = "llama3.2-vision:11b"
 SPAM_AUTO_THRESHOLD = 0.92  # nad tímto skórem označíme spam automaticky
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL = "claude-haiku-4-5"  # rychlý+levný pro verifikaci spamu
 
 MAILBOX_TO_FIRMA = {
     "dxpavel@icloud.com":               "PRIVATE",
@@ -57,6 +60,124 @@ def _check_rules(from_addr: str) -> dict | None:
     conn.close()
     if row:
         return {"is_spam": row[0] == "yes", "confidence": 1.0, "source": "rule"}
+    return None
+
+
+def _extract_email(from_addr: str) -> str:
+    """Extrahuje čistou emailovou adresu z řetězce 'Jméno <email>' nebo '<email>'."""
+    m = re.search(r'<([^>]+)>', from_addr or '')
+    if m:
+        return m.group(1).lower().strip()
+    return (from_addr or '').lower().strip()
+
+
+def _is_contact(from_addr: str) -> bool:
+    """
+    Vrátí True pokud email odesílatele existuje v apple_contacts.
+    Kontakt = nikdy auto-spam (pokud není manuálně přidán do spam pravidel).
+    """
+    email = _extract_email(from_addr)
+    if not email:
+        return False
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT 1 FROM apple_contacts
+            WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements(emails) AS e
+                WHERE lower(e->>'value') = %s
+            )
+            LIMIT 1
+        """, (email,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return bool(row)
+    except Exception as e:
+        log.error(f"_is_contact {email}: {e}")
+        return False
+
+
+def _claude_verify_spam(from_addr: str, subject: str, body: str) -> dict | None:
+    """
+    Druhý názor od Claude Haiku — voláme když Llama označí spam s nízkým confidence.
+    Každý odesílatel se volá jen jednou — výsledek se cachuje v claude_sender_verdicts.
+    Vrátí {"is_spam": bool, "reason": str} nebo None při chybě.
+    """
+    email = _extract_email(from_addr)
+
+    # 1. Zkontroluj cache
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT is_spam, reason FROM claude_sender_verdicts WHERE email = %s", (email,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            log.info(f"Claude cache hit: {email} → is_spam={row[0]}")
+            return {"is_spam": row[0], "reason": row[1], "cached": True}
+    except Exception as e:
+        log.error(f"Claude cache read: {e}")
+
+    # 2. Cache miss → zavolej API
+    if not ANTHROPIC_API_KEY:
+        log.warning("ANTHROPIC_API_KEY není nastaven, přeskakuji Claude verifikaci")
+        return None
+
+    prompt = f"""Rozhodni, zda je tento email SPAM nebo legitimní. Buď přísný ale spravedlivý.
+Pokud je odesílatel člověk (ne robot/newsletter/marketing), odpověz is_spam=false.
+
+Od: {from_addr or ''}
+Předmět: {subject or ''}
+Obsah (prvních 600 znaků): {(body or '')[:600]}
+
+Vrať POUZE JSON (bez komentářů):
+{{"is_spam": true/false, "reason": "1 věta"}}"""
+
+    try:
+        r = httpx.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": CLAUDE_MODEL,
+                "max_tokens": 128,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        text = r.json()["content"][0]["text"]
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start >= 0 and end > start:
+            result = json.loads(text[start:end])
+            # 3. Ulož do cache
+            try:
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO claude_sender_verdicts (email, is_spam, reason)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (email) DO UPDATE SET
+                        is_spam = EXCLUDED.is_spam,
+                        reason = EXCLUDED.reason,
+                        verified_at = NOW()
+                """, (email, result.get("is_spam", False), result.get("reason", "")))
+                conn.commit()
+                cur.close()
+                conn.close()
+                log.info(f"Claude verdict uložen: {email} → is_spam={result.get('is_spam')}")
+            except Exception as e:
+                log.error(f"Claude cache write: {e}")
+            return result
+    except Exception as e:
+        log.error(f"Claude verify spam API: {e}")
     return None
 
 
@@ -112,13 +233,19 @@ def classify_new_emails(limit: int = 20):
                 log.info(f"POZVÁNKA (pravidlo): {subject[:60]}")
                 continue
 
-            # 2b. Spam pravidla (bez AI)
+            # 2b. Spam pravidla — manuální override (nejvyšší priorita, i nad kontakty)
             rule = _check_rules(from_addr or "")
             if rule and rule["is_spam"]:
                 _save_classification(email_id, firma, "SPAM", None, True, 1.0)
                 move_to_trash(email_id)
                 log.info(f"SPAM (pravidlo → trash): {from_addr}")
                 continue
+
+            # 2c. Kontakt v Apple Contacts → blokuje AI spam
+            #     (pravidlo výše ho může přepsat — manuální spam > kontakt)
+            in_contacts = _is_contact(from_addr or "")
+            if in_contacts:
+                log.info(f"KONTAKT whitelist (no-spam): {_extract_email(from_addr or '')}")
 
             # 3. Llama klasifikace
             body = ""
@@ -129,6 +256,10 @@ def classify_new_emails(limit: int = 20):
                 continue
 
             is_spam = result.get("is_spam", False)
+            # Kontakt v adresáři → nikdy spam bez ohledu na AI
+            if in_contacts and is_spam:
+                log.info(f"KONTAKT override: AI řekla spam, ignoruji ({from_addr})")
+                is_spam = False
             confidence = float(result.get("confidence", 0.5))
             typ = result.get("typ", "INFO")
             task_status = result.get("task_status")
@@ -139,12 +270,30 @@ def classify_new_emails(limit: int = 20):
 
             # 4. Spam handling
             if is_spam:
+                short_from = _extract_email(from_addr or "")
                 if confidence >= SPAM_AUTO_THRESHOLD:
                     move_to_trash(email_id)
+                    tg_send(f"🗑️ <b>AUTO-SPAM</b> ({confidence:.0%})\n<code>{html_escape(short_from)}</code>\n<i>{html_escape((subject or '')[:80])}</i>")
                     log.info(f"SPAM (auto trash, {confidence:.0%}): {subject}")
                 else:
-                    send_spam_check(str(email_id), from_addr or "", subject or "")
-                    log.info(f"SPAM? (Telegram dotaz, {confidence:.0%}): {subject}")
+                    # Llama není jistá → zeptáme se Claude
+                    log.info(f"SPAM? Llama {confidence:.0%} → Claude verifikace: {subject[:60]}")
+                    claude = _claude_verify_spam(from_addr or "", subject or "", body)
+                    if claude is None:
+                        # Claude nedostupný → fallback na TG
+                        send_spam_check(str(email_id), from_addr or "", subject or "")
+                        log.info(f"SPAM? (Claude chyba → TG, {confidence:.0%}): {subject}")
+                    elif claude.get("is_spam"):
+                        # Claude potvrdil spam → trash
+                        _save_classification(email_id, firma, typ, task_status, True, confidence)
+                        move_to_trash(email_id)
+                        cached = " (cache)" if claude.get("cached") else ""
+                        tg_send(f"🗑️ <b>AUTO-SPAM</b> Claude{cached} ({confidence:.0%})\n<code>{html_escape(short_from)}</code>\n<i>{html_escape((subject or '')[:80])}</i>")
+                        log.info(f"SPAM (Claude potvrzen → trash, {confidence:.0%}): {claude.get('reason','')}")
+                    else:
+                        # Claude říká NENÍ spam → překlasifikuj a nech projít normálně
+                        _save_classification(email_id, firma, typ, task_status, False, confidence)
+                        log.info(f"SPAM zamítnut Claudem ({confidence:.0%}): {claude.get('reason','')} | {from_addr}")
 
             # 5. Auto-přesun organizačních typů ≥85%
             elif confidence >= 0.85 and typ in ("NOTIFIKACE", "ESHOP", "NEWSLETTER", "POTVRZENÍ", "FAKTURA"):

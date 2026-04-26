@@ -71,6 +71,78 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
 
 DAYS_BACK = 7
 
+# Přílohy — kontejnerová cesta je mountovaná na Mac Desktop/OmniFocus
+_ATTACHMENTS_DIR     = "/app/attachments"
+_MAC_ATTACHMENTS_DIR = "/Users/pavel/Desktop/OmniFocus"
+_MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024  # 50 MB
+
+
+def _safe_filename(name: str) -> str:
+    """Odstraní nebezpečné znaky z názvu souboru."""
+    name = re.sub(r'[^\w.\-]', '_', name)
+    return name[:200] or "attachment"
+
+
+def _extract_attachments(msg) -> list[dict]:
+    """Extrahuje přílohy z emailu jako list {filename, mime_type, data, size_bytes}."""
+    result = []
+    seen = set()
+    for part in msg.walk():
+        if part.get_content_disposition() != "attachment":
+            continue
+        try:
+            raw_name = part.get_filename() or ""
+            filename = decode_header_value(raw_name) if raw_name else f"attachment_{len(result)+1}"
+            safe = _safe_filename(filename)
+            # Deduplikace (stejný soubor vícekrát)
+            if safe in seen:
+                base, ext = os.path.splitext(safe)
+                safe = f"{base}_{len(result)+1}{ext}"
+            seen.add(safe)
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+            if len(payload) > _MAX_ATTACHMENT_SIZE:
+                print(f"    SKIP příloha přes 50 MB: {filename}")
+                continue
+            result.append({
+                "filename": filename,
+                "safe_filename": safe,
+                "mime_type": part.get_content_type() or "application/octet-stream",
+                "data": payload,
+                "size_bytes": len(payload),
+            })
+        except Exception as e:
+            print(f"    WARN attachment extract: {e}")
+    return result
+
+
+def _save_email_attachments(email_uuid: str, attachments: list, cur) -> None:
+    """Uloží přílohy na disk a zapíše záznamy do DB."""
+    if not attachments:
+        return
+    email_dir = os.path.join(_ATTACHMENTS_DIR, str(email_uuid))
+    try:
+        os.makedirs(email_dir, exist_ok=True)
+    except Exception as e:
+        print(f"    WARN makedirs {email_dir}: {e}")
+        return
+    for att in attachments:
+        file_path = os.path.join(email_dir, att["safe_filename"])
+        try:
+            with open(file_path, "wb") as f:
+                f.write(att["data"])
+            # Mac cesta pro Apple Bridge (osascript běží na hostu)
+            mac_path = file_path.replace(_ATTACHMENTS_DIR, _MAC_ATTACHMENTS_DIR)
+            cur.execute("""
+                INSERT INTO attachments
+                    (source_type, source_record_id, filename, storage_path, mime_type, size_bytes)
+                VALUES ('email', %s, %s, %s, %s, %s)
+            """, (email_uuid, att["filename"], mac_path, att["mime_type"], att["size_bytes"]))
+            print(f"      📎 příloha: {att['filename']} ({att['size_bytes']//1024} kB)")
+        except Exception as e:
+            print(f"    WARN attachment save {att['filename']}: {e}")
+
 ACCOUNTS = [
     {"name": "brogi@dxpsolutions.cz",     "host": os.getenv("IMAP_HOST_DXPSOLUTIONS"), "port": 993, "ssl": True,  "user": os.getenv("IMAP_USER_DXPSOLUTIONS"),  "password": os.getenv("IMAP_PASSWORD_DXPSOLUTIONS")},
     {"name": "pavel@dxpsolutions.cz",     "host": os.getenv("IMAP_HOST_PAVEL"),        "port": 993, "ssl": True,  "user": os.getenv("IMAP_USER_PAVEL"),         "password": os.getenv("IMAP_PASSWORD_PAVEL")},
@@ -139,10 +211,8 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
                 except Exception:
                     pass
 
-            has_attachments = any(
-                part.get_content_disposition() == "attachment"
-                for part in msg.walk()
-            )
+            attachments = _extract_attachments(msg)
+            has_attachments = bool(attachments)
 
             body_text = _extract_body(msg)
             unsubscribe_url = _find_unsubscribe(msg, body_text)
@@ -158,6 +228,7 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
                 "imap_uid": int(uid.decode() if isinstance(uid, bytes) else uid),
                 "body_text": body_text,
                 "unsubscribe_url": unsubscribe_url,
+                "attachments": attachments,
                 "raw_payload": {
                     "message_id": message_id,
                     "subject": subject,
@@ -188,6 +259,7 @@ def upsert_messages(messages: list) -> tuple[int, int]:
             ON CONFLICT (source_id) DO UPDATE SET
                 body_text = COALESCE(EXCLUDED.body_text, email_messages.body_text),
                 unsubscribe_url = COALESCE(EXCLUDED.unsubscribe_url, email_messages.unsubscribe_url)
+            RETURNING id, (xmax = 0) AS is_new
         """, (
             "email",
             msg["source_id"],
@@ -202,8 +274,12 @@ def upsert_messages(messages: list) -> tuple[int, int]:
             msg.get("body_text"),
             msg.get("unsubscribe_url"),
         ))
-        if cur.rowcount:
+        row = cur.fetchone()
+        email_uuid, is_new = row[0], row[1]
+        if is_new:
             new_count += 1
+            # Ulož přílohy na disk a do DB (jen pro nové emaily)
+            _save_email_attachments(str(email_uuid), msg.get("attachments", []), cur)
         else:
             skip_count += 1
     conn.commit()

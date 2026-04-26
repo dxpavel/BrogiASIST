@@ -78,9 +78,19 @@ def answer_callback(callback_query_id: str, text: str = "OK") -> None:
 
 
 def delete_message(message_id: int) -> bool:
+    """
+    Smaže TG zprávu. Pokud selže (>48h nebo jiná chyba),
+    fallback: odstraní inline klávesnici editací — tlačítka zmizí.
+    """
     try:
         r = httpx.post(f"{BASE}/deleteMessage",
                        json={"chat_id": CHAT_ID, "message_id": message_id}, timeout=5)
-        return r.ok
+        if r.ok:
+            return True
+        # Fallback — smazat nelze (>48h, smazáno ručně apod.) → odstraň tlačítka
+        httpx.post(f"{BASE}/editMessageReplyMarkup",
+                   json={"chat_id": CHAT_ID, "message_id": message_id,
+                         "reply_markup": {"inline_keyboard": []}}, timeout=5)
+        return False  # označíme jako neúspěch ale tlačítka jsou pryč
     except Exception:
         return False

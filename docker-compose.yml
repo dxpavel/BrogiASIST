@@ -57,6 +57,7 @@ services:
       POSTGRES_PORT: 5432
     volumes:
       - ./logs:/app/logs
+      - /Users/pavel/Desktop/OmniFocus:/app/attachments
     ports:
       - "9001:9001"
     depends_on:
