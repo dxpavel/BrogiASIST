@@ -91,15 +91,17 @@
       </div>
       <div class="ef-sep"></div>
       <div class="ef-chips" id="efTyp">
-        <span class="ef-chip all on"   data-val="">Vše</span>
-        <span class="ef-chip t-ukol"   data-val="ÚKOL">ÚKOL</span>
-        <span class="ef-chip t-fakt"   data-val="FAKTURA">FAKT</span>
-        <span class="ef-chip t-notif"  data-val="NOTIFIKACE">NOTIF</span>
-        <span class="ef-chip t-nabid"  data-val="NABÍDKA">NABÍD</span>
-        <span class="ef-chip t-potv"   data-val="POTVRZENÍ">POTV</span>
-        <span class="ef-chip t-info"   data-val="INFO">INFO</span>
-        <span class="ef-chip t-nl"     data-val="NEWSLETTER">NL</span>
-        <span class="ef-chip fail"     data-val="SPAM">SPAM</span>
+        <span class="ef-chip all on"          data-val="">Vše</span>
+        <span class="ef-chip typ-ukol"        data-val="ÚKOL">ÚKOL</span>
+        <span class="ef-chip typ-doklad"      data-val="DOKLAD">DOKLAD</span>
+        <span class="ef-chip typ-nabidka"     data-val="NABÍDKA">NABÍD</span>
+        <span class="ef-chip typ-notifikace"  data-val="NOTIFIKACE">NOTIF</span>
+        <span class="ef-chip typ-pozvanka"    data-val="POZVÁNKA">POZV</span>
+        <span class="ef-chip typ-info"        data-val="INFO">INFO</span>
+        <span class="ef-chip typ-error"       data-val="ERROR">ERR</span>
+        <span class="ef-chip typ-list"        data-val="LIST">LIST</span>
+        <span class="ef-chip typ-encrypted"   data-val="ENCRYPTED">🔒</span>
+        <span class="ef-chip fail"            data-val="SPAM">SPAM</span>
       </div>
       <div class="ef-sep"></div>
       <div class="ef-chips" id="efTask">
@@ -116,7 +118,13 @@
       <tr><th></th><th></th><th>Od</th><th>Předmět</th><th>Tagy</th><th style="text-align:right">Čas</th></tr>
       {% for m in db.email_log %}
       {% set fc = {'DXPSOLUTIONS':'f-dxp','MBANK':'f-mbank','ZAMECNICTVI':'f-zamek','PRIVATE':'f-priv'} %}
-      {% set tc = {'ÚKOL':'t-ukol','FAKTURA':'t-fakt','INFO':'t-info','NEWSLETTER':'t-nl','NOTIFIKACE':'t-notif','NABÍDKA':'t-nabid','POTVRZENÍ':'t-potv','ESHOP':'t-nabid','SPAM':'fail'} %}
+      {% set tc = {
+        'ÚKOL':'typ-ukol', 'DOKLAD':'typ-doklad', 'NABÍDKA':'typ-nabidka',
+        'NOTIFIKACE':'typ-notifikace', 'POZVÁNKA':'typ-pozvanka', 'INFO':'typ-info',
+        'ERROR':'typ-error', 'LIST':'typ-list', 'ENCRYPTED':'typ-encrypted',
+        'FAKTURA':'typ-doklad', 'NEWSLETTER':'typ-info', 'POTVRZENÍ':'typ-notifikace',
+        'ESHOP':'typ-nabidka', 'SPAM':'typ-error'
+      } %}
       <tr class="clickable" onclick="openEmailModal('{{ m.id }}')"
           data-firma="{{ m.firma or '' }}"
           data-typ="{{ m.typ or '' }}"
@@ -128,7 +136,7 @@
         <td style="overflow:hidden;text-overflow:ellipsis;font-size:9px;font-family:var(--font-mono)">{{ m.from_address }}</td>
         <td style="overflow:hidden;text-overflow:ellipsis;font-size:10px">{{ m.subject }}</td>
         <td style="white-space:nowrap;overflow:hidden">
-          {% if m.typ %}<span class="badge {{ tc.get(m.typ, 't-info') }}">{{ m.typ }}</span>{% endif %}
+          {% if m.typ %}<span class="typ-box {{ tc.get(m.typ, 'typ-info') }}">{{ m.typ }}</span>{% endif %}
           {% if m.task_status and 'ČEKÁ' in m.task_status %}<span class="badge ts-ceka">!</span>{% endif %}
           {% if not m.firma and not m.typ %}<span style="color:#3d4450;font-size:9px">—</span>{% endif %}
         </td>
