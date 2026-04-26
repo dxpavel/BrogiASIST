@@ -283,6 +283,79 @@ JSON.stringify({{ok: true, name: {name_js}}});
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/notes/{note_id}")
+def notes_get(note_id: str):
+    """Fetch konkrétní Apple Notes note podle id. Pro threading TG flow:
+    když přijde nový email v threadu s asociovaným note, bot si ho dotahá
+    a může zobrazit v TG nebo append text."""
+    nid_js = json.dumps(note_id)
+    script = f"""
+const notes = Application('Notes');
+try {{
+  const n = notes.notes.whose({{id: {nid_js}}})[0];
+  if (!n) throw new Error('not_found');
+  const props = {{
+    id: n.id(),
+    name: n.name() || '',
+    body: n.body() || '',
+    creation_date:     n.creationDate()     ? n.creationDate().toISOString()     : null,
+    modification_date: n.modificationDate() ? n.modificationDate().toISOString() : null,
+  }};
+  JSON.stringify({{ok: true, note: props}});
+}} catch (e) {{
+  JSON.stringify({{ok: false, error: String(e.message || e), note_id: {nid_js}}});
+}}
+"""
+    try:
+        return run_jxa(script, timeout=15)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/notes/{note_id}/append")
+def notes_append(note_id: str, body: dict):
+    """Přidá HTML/text k existující Apple Notes note.
+
+    Apple Notes ukládá body jako HTML (nikoli plain text). Pro Apple-friendly
+    append vložíme oddělovací <hr/> a text obalený v <div>. Pavel pak v Notes
+    vidí klasický horizontal rule + nový blok.
+
+    Body:
+      text: str       — text k apendování (HTML escape se aplikuje, znaky < > &)
+      separator: bool — zda vložit <hr/> před text (default: True)
+    """
+    text = body.get("text", "") or ""
+    use_sep = body.get("separator", True)
+
+    # HTML escape — Apple Notes tolerantně přijme plain text v body, ale safe je escape
+    safe_text = (text.replace("&", "&amp;")
+                     .replace("<", "&lt;")
+                     .replace(">", "&gt;"))
+    safe_text_html = safe_text.replace("\n", "<br/>")
+
+    sep_html = "<hr/>" if use_sep else ""
+    append_html = f'{sep_html}<div>{safe_text_html}</div>'
+
+    nid_js = json.dumps(note_id)
+    append_js = json.dumps(append_html)
+    script = f"""
+const notes = Application('Notes');
+try {{
+  const n = notes.notes.whose({{id: {nid_js}}})[0];
+  if (!n) throw new Error('note not found: ' + {nid_js});
+  const oldBody = n.body() || '';
+  n.body = oldBody + {append_js};
+  JSON.stringify({{ok: true, note_id: n.id(), new_length: n.body().length}});
+}} catch (e) {{
+  JSON.stringify({{ok: false, error: String(e.message || e)}});
+}}
+"""
+    try:
+        return run_jxa(script, timeout=15)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/notes/add")
 def notes_add(body: dict):
     """Přidá novou poznámku do Apple Notes."""
