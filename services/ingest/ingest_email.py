@@ -250,6 +250,11 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
                 "X-Mailer":         _hdr("X-Mailer"),
             }
 
+            # Pro threading (blocker D1): extrahovat z headers do top-level
+            in_reply_to = headers.get("In-Reply-To") or None
+            if in_reply_to:
+                in_reply_to = in_reply_to.strip().strip("<>").strip()
+
             messages.append({
                 "source_id": message_id,
                 "mailbox": account["name"],
@@ -262,6 +267,8 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
                 "body_text": body_text,
                 "unsubscribe_url": unsubscribe_url,
                 "attachments": attachments,
+                "rfc_message_id": message_id.strip().strip("<>").strip() if message_id else None,
+                "in_reply_to": in_reply_to,
                 "raw_payload": {
                     "message_id": message_id,
                     "subject": subject,
@@ -288,11 +295,13 @@ def upsert_messages(messages: list) -> tuple[int, int]:
             INSERT INTO email_messages
                 (source_type, source_id, raw_payload, mailbox, from_address,
                  to_addresses, subject, sent_at, has_attachments, imap_uid,
-                 body_text, unsubscribe_url)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 body_text, unsubscribe_url, message_id, in_reply_to)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (source_id) DO UPDATE SET
                 body_text = COALESCE(EXCLUDED.body_text, email_messages.body_text),
-                unsubscribe_url = COALESCE(EXCLUDED.unsubscribe_url, email_messages.unsubscribe_url)
+                unsubscribe_url = COALESCE(EXCLUDED.unsubscribe_url, email_messages.unsubscribe_url),
+                message_id = COALESCE(EXCLUDED.message_id, email_messages.message_id),
+                in_reply_to = COALESCE(EXCLUDED.in_reply_to, email_messages.in_reply_to)
             RETURNING id, (xmax = 0) AS is_new, is_spam
         """, (
             "email",
@@ -307,9 +316,28 @@ def upsert_messages(messages: list) -> tuple[int, int]:
             msg["imap_uid"],
             msg.get("body_text"),
             msg.get("unsubscribe_url"),
+            msg.get("rfc_message_id"),
+            msg.get("in_reply_to"),
         ))
         row = cur.fetchone()
         email_uuid, is_new, is_spam_db = row[0], row[1], row[2]
+
+        # Threading: pokud je nový, dohledat thread_id z parent (in_reply_to → message_id)
+        # Pokud parent nenajdeme, thread_id = vlastní id (root threadu).
+        if is_new:
+            parent_id = None
+            if msg.get("in_reply_to"):
+                cur.execute(
+                    "SELECT id, thread_id FROM email_messages WHERE message_id = %s LIMIT 1",
+                    (msg["in_reply_to"],)
+                )
+                parent_row = cur.fetchone()
+                if parent_row:
+                    parent_id = parent_row[1] or parent_row[0]  # parent.thread_id nebo parent.id
+            cur.execute(
+                "UPDATE email_messages SET thread_id = %s WHERE id = %s",
+                (parent_id or email_uuid, email_uuid)
+            )
         if is_new:
             new_count += 1
         else:
