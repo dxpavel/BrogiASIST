@@ -132,7 +132,7 @@ if __name__ == "__main__":
     now_tz = datetime.now(tz=timezone.utc)
     scheduler.add_job(ingest_notes,     "interval", minutes=30, id="notes",      next_run_time=now_tz)
     scheduler.add_job(ingest_reminders, "interval", minutes=15, id="reminders",  next_run_time=now_tz)
-    scheduler.add_job(ingest_contacts,  "interval", hours=6,    id="contacts",   next_run_time=now_tz)
+    scheduler.add_job(ingest_contacts,  "interval", hours=12,   id="contacts",   next_run_time=now_tz)
     scheduler.add_job(ingest_calendar,       "interval", minutes=15, id="calendar",  next_run_time=now_tz)
     scheduler.add_job(classify_new_emails,      "interval", minutes=5,  id="classify",  next_run_time=now_tz)
     scheduler.add_job(notify_classified_emails, "interval", minutes=2,  id="notify",    next_run_time=now_tz)
