@@ -1,10 +1,12 @@
+# Společný compose pro DEV i PROD. Rozdíly mezi prostředími jsou v .env (lokální per stroj).
+# DEV (.env): CONTAINER_PREFIX=brogi, POSTGRES_PORT_HOST=5433, ATTACHMENTS_BIND=/Users/pavel/Desktop/OmniFocus, OLLAMA_BASE_URL=http://host.docker.internal:11434
+# PROD (.env): CONTAINER_PREFIX=brogiasist, POSTGRES_PORT_HOST=5432, ATTACHMENTS_BIND=./attachments, OLLAMA_BASE_URL=http://ollama:11434
 services:
 
   postgres:
     image: postgres:16-alpine
-    container_name: brogi_postgres
+    container_name: ${CONTAINER_PREFIX:-brogiasist}-postgres
     restart: unless-stopped
-    env_file: .env
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -13,7 +15,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./sql:/docker-entrypoint-initdb.d:ro
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT_HOST:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -22,16 +24,26 @@ services:
 
   chromadb:
     image: chromadb/chroma:latest
-    container_name: brogi_chromadb
+    container_name: ${CONTAINER_PREFIX:-brogiasist}-chromadb
     restart: unless-stopped
     volumes:
-      - chroma_data:/chroma/chroma
+      - chroma_data:/data
     ports:
       - "8000:8000"
 
-  dashboard:
-    build: ./services/dashboard
-    container_name: brogi_dashboard
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ${CONTAINER_PREFIX:-brogiasist}-ollama
+    restart: unless-stopped
+    profiles: ["ollama"]   # opt-in: na DEV používáme host Ollama, na PROD běží jako kontejner
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama_data:/root/.ollama
+
+  scheduler:
+    build: ./services/ingest
+    container_name: ${CONTAINER_PREFIX:-brogiasist}-scheduler
     restart: unless-stopped
     env_file: .env
     environment:
@@ -39,6 +51,28 @@ services:
       POSTGRES_PORT: 5432
       CHROMA_HOST: chromadb
       CHROMA_PORT: 8000
+    volumes:
+      - ./logs:/app/logs
+      - ${ATTACHMENTS_BIND:-./attachments}:/app/attachments
+    ports:
+      - "9001:9001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+
+  dashboard:
+    build: ./services/dashboard
+    container_name: ${CONTAINER_PREFIX:-brogiasist}-dashboard
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: 8000
+      INGEST_URL: http://scheduler:9001
     ports:
       - "9000:9000"
     depends_on:
@@ -46,23 +80,6 @@ services:
         condition: service_healthy
       chromadb:
         condition: service_started
-
-  scheduler:
-    build: ./services/ingest
-    container_name: brogi_scheduler
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-    volumes:
-      - ./logs:/app/logs
-      - /Users/pavel/Desktop/OmniFocus:/app/attachments
-    ports:
-      - "9001:9001"
-    depends_on:
-      postgres:
-        condition: service_healthy
 
 volumes:
   postgres_data:

@@ -71,9 +71,13 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
 
 DAYS_BACK = 7
 
-# Přílohy — kontejnerová cesta je mountovaná na Mac Desktop/OmniFocus
+# Přílohy — vždy se zapisují do _ATTACHMENTS_DIR (container path).
+# Na DEV byl bind mount /Users/pavel/Desktop/OmniFocus → /app/attachments,
+# proto se do DB ukládala Mac cesta (host_prefix). Na PROD (Linux VM, žádný bind mount na Mac)
+# se do DB ukládá přímo container path.
+# Řízeno env var ATTACHMENTS_HOST_PREFIX — pokud prázdné/nenastavené (PROD), použije se _ATTACHMENTS_DIR.
 _ATTACHMENTS_DIR     = "/app/attachments"
-_MAC_ATTACHMENTS_DIR = "/Users/pavel/Desktop/OmniFocus"
+_MAC_ATTACHMENTS_DIR = os.getenv("ATTACHMENTS_HOST_PREFIX", "")  # DEV: "/Users/pavel/Desktop/OmniFocus", PROD: ""
 _MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024  # 50 MB
 
 
@@ -132,13 +136,14 @@ def _save_email_attachments(email_uuid: str, attachments: list, cur) -> None:
         try:
             with open(file_path, "wb") as f:
                 f.write(att["data"])
-            # Mac cesta pro Apple Bridge (osascript běží na hostu)
-            mac_path = file_path.replace(_ATTACHMENTS_DIR, _MAC_ATTACHMENTS_DIR)
+            # storage_path: na DEV obsahuje Mac cestu (host overlay přes bind mount),
+            # na PROD container cestu (žádný host overlay).
+            storage_path = file_path.replace(_ATTACHMENTS_DIR, _MAC_ATTACHMENTS_DIR) if _MAC_ATTACHMENTS_DIR else file_path
             cur.execute("""
                 INSERT INTO attachments
                     (source_type, source_record_id, filename, storage_path, mime_type, size_bytes)
                 VALUES ('email', %s, %s, %s, %s, %s)
-            """, (email_uuid, att["filename"], mac_path, att["mime_type"], att["size_bytes"]))
+            """, (email_uuid, att["filename"], storage_path, att["mime_type"], att["size_bytes"]))
             print(f"      📎 příloha: {att['filename']} ({att['size_bytes']//1024} kB)")
         except Exception as e:
             print(f"    WARN attachment save {att['filename']}: {e}")

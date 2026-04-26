@@ -1,3 +1,5 @@
+from __future__ import annotations  # Python 3.9 kompat (PROD na Apple Studio) — `str | None` syntax
+
 import base64
 import subprocess
 import json

@@ -21,10 +21,11 @@ OFFSET_KEY = "tg_callback_offset"
 ATTACHMENT_MAX_SIZE  = 50 * 1024 * 1024
 ATTACHMENT_TASK_MAX  = 100 * 1024 * 1024
 
-# Mac cesta -> kontejnerová cesta. attachments.storage_path obsahuje Mac cestu
-# (bind mount ./Desktop/OmniFocus → /app/attachments). Pro čtení v kontejneru
-# musíme převést.
-_HOST_PREFIX      = "/Users/pavel/Desktop/OmniFocus"
+# storage_path v DB může obsahovat:
+#  - DEV: Mac cestu (bind mount /Users/pavel/Desktop/OmniFocus → /app/attachments) — nutno převést
+#  - PROD: container cestu (žádný host overlay) — čte se přímo
+# Řízeno env var ATTACHMENTS_HOST_PREFIX (DEV: "/Users/pavel/Desktop/OmniFocus", PROD: prázdné).
+_HOST_PREFIX      = os.getenv("ATTACHMENTS_HOST_PREFIX", "")
 _CONTAINER_PREFIX = "/app/attachments"
 
 
@@ -40,8 +41,8 @@ def _read_attachments_b64(file_paths: list[str], email_id: str) -> list[dict]:
     for host_path in file_paths or []:
         if not host_path:
             continue
-        # Convert Mac → container path
-        cont_path = host_path.replace(_HOST_PREFIX, _CONTAINER_PREFIX, 1)
+        # PROD: storage_path už je container path → použij přímo. DEV: replace host→container.
+        cont_path = host_path.replace(_HOST_PREFIX, _CONTAINER_PREFIX, 1) if _HOST_PREFIX else host_path
         if not os.path.exists(cont_path):
             log.warning(f"OF attachment missing on disk: email_id={email_id} path={cont_path}")
             continue
