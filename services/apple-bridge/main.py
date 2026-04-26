@@ -596,63 +596,57 @@ def contacts_all():
     Při prvním volání macOS vyhodí dialog "Apple Bridge requests Contacts
     access" — uživatel klikne Allow → funguje dál bez ptaní.
     """
+    # Optimalizovaný JXA — minimum bridge calls per kontakt.
+    # Skupiny first (rychlé, ~19 skupin × people()), pak kontakty
+    # bez emails/phones (ty stejně máme z dřívějších sqlite ingestů
+    # v PostgreSQL, JXA je dotahuje pomalu).
     script = r'''
 const contacts = Application('Contacts');
 contacts.includeStandardAdditions = false;
 
-// Mapování person_id → [group_name, ...]
 const groupMap = {};
 const groups = contacts.groups();
 for (let i = 0; i < groups.length; i++) {
     const g = groups[i];
-    const gname = g.name();
+    let gname;
+    try { gname = g.name(); } catch (e) { continue; }
     if (!gname) continue;
-    let members;
-    try { members = g.people(); } catch (e) { continue; }
-    for (let j = 0; j < members.length; j++) {
-        const pid = members[j].id();
+    let memIds;
+    try { memIds = g.people().map(p => p.id()); } catch (e) { continue; }
+    for (let j = 0; j < memIds.length; j++) {
+        const pid = memIds[j];
         if (!groupMap[pid]) groupMap[pid] = [];
         groupMap[pid].push(gname);
     }
 }
 
-// Kontakty
 const result = [];
 const people = contacts.people();
 for (let i = 0; i < people.length; i++) {
     const p = people[i];
-    const pid = p.id();
-    let emails = [];
+    let pid;
+    try { pid = p.id(); } catch (e) { continue; }
     try {
-        const ee = p.emails();
-        for (let k = 0; k < ee.length; k++) {
-            emails.push({label: ee[k].label() || '', value: ee[k].value() || ''});
-        }
-    } catch (e) {}
-    let phones = [];
-    try {
-        const pp = p.phones();
-        for (let k = 0; k < pp.length; k++) {
-            phones.push({label: pp[k].label() || '', value: pp[k].value() || ''});
-        }
-    } catch (e) {}
-    let mod = null;
-    try { const m = p.modificationDate(); if (m) mod = m.toISOString(); } catch (e) {}
-    result.push({
-        id: pid,
-        first: p.firstName() || null,
-        last: p.lastName() || null,
-        org: p.organization() || null,
-        modified_at: mod,
-        emails: emails,
-        phones: phones,
-        groups: groupMap[pid] || [],
-    });
+        result.push({
+            id: pid,
+            first: p.firstName() || null,
+            last: p.lastName() || null,
+            org: p.organization() || null,
+            modified_at: null,
+            emails: [],
+            phones: [],
+            groups: groupMap[pid] || [],
+        });
+    } catch (e) {
+        result.push({id: pid, first: null, last: null, org: null,
+                     modified_at: null, emails: [], phones: [],
+                     groups: groupMap[pid] || []});
+    }
 }
 JSON.stringify(result);
 '''
     try:
-        contacts_data = run_jxa(script, timeout=120)
+        contacts_data = run_jxa(script, timeout=240)
         if not isinstance(contacts_data, list):
             return JSONResponse({
                 "ok": False, "error": "jxa_unexpected_type",
