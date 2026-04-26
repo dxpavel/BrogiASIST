@@ -18,7 +18,10 @@
 <link rel="apple-touch-icon" sizes="57x57" href="/static/favicon-57.png">
 <meta http-equiv="refresh" content="{% block refresh %}60{% endblock %}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- display=optional: fallback font zůstane pokud custom font nenaloadne do ~100ms.
+     Žádný late-swap → žádný layout shift při refreshu (per Pavlův CLS feedback). -->
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=optional" rel="stylesheet">
 <style>
   /* ── DESIGN TOKENS (dark výchozí) ── */
   :root {
@@ -231,6 +234,111 @@
   .empty { color: var(--text-muted); font-style: italic; font-size: 10px; padding: 6px 0; }
   .card-full { grid-column: 1 / -1; }
 
+  /* ─────────────────────────────────────────────────────────────
+     EMAIL SEMANTICS v1 — grafická spec (per docs/brogiasist-semantics-v1.md sekce 19)
+     TYP   = kostička s barevným borderem (transparent fill)
+     ACTION = plný fill (kontrastní text)
+     STATUS = kolečko se symbolem kazeťáku (⏺▶⏸⏏⏹)
+     ───────────────────────────────────────────────────────────── */
+
+  /* TYP barvy — border + matching text */
+  :root {
+    --typ-ukol:       #E53935;  /* červená — priorita, vyžaduje akci */
+    --typ-doklad:     #1A237E;  /* tmavě modrá — finance, formální */
+    --typ-nabidka:    #FB8C00;  /* oranžová — komerce */
+    --typ-notifikace: #FDD835;  /* žlutá — upozornění */
+    --typ-pozvanka:   #8E24AA;  /* fialová — calendar/event */
+    --typ-info:       #9E9E9E;  /* šedá — neutrální */
+    --typ-error:      #880E4F;  /* tmavě červená/vínová — chyba */
+    --typ-list:       #039BE5;  /* světle modrá — mailing list */
+    --typ-encrypted:  #212121;  /* černá — nečitelné */
+
+    --action-of:      #1976D2;
+    --action-rem:     #7B1FA2;
+    --action-cal:     #2E7D32;
+    --action-note:    #FBC02D;
+    --action-hotovo:  #43A047;
+    --action-spam:    #424242;
+    --action-unsub:   #F57C00;
+    --action-skip:    #BDBDBD;
+    --action-undo:    #FFFFFF;
+
+    --status-novy:        #E53935;
+    --status-precteny:    #FFA726;
+    --status-cekajici:    #1A237E;
+    --status-zpracovany:  #43A047;
+    --status-smazany:     #757575;
+  }
+
+  /* TYP — kostička s barevným borderem */
+  .typ-box {
+    display: inline-block;
+    padding: 1px 6px;
+    border: 1.5px solid currentColor;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    background: transparent;
+    line-height: 14px;
+    vertical-align: middle;
+    font-family: var(--font-mono);
+  }
+  .typ-ukol       { color: var(--typ-ukol); }
+  .typ-doklad     { color: var(--typ-doklad); }
+  .typ-nabidka    { color: var(--typ-nabidka); }
+  .typ-notifikace { color: var(--typ-notifikace); }
+  .typ-pozvanka   { color: var(--typ-pozvanka); }
+  .typ-info       { color: var(--typ-info); }
+  .typ-error      { color: var(--typ-error); }
+  .typ-list       { color: var(--typ-list); }
+  .typ-encrypted  { color: var(--typ-encrypted); }
+
+  /* ACTION — plná barva (filled) */
+  .action-btn {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 4px;
+    border: none;
+    font-size: 10px;
+    font-weight: 600;
+    cursor: pointer;
+    color: #fff;
+    font-family: var(--font-mono);
+    transition: filter .12s;
+  }
+  .action-btn:hover { filter: brightness(1.15); }
+  .action-of      { background: var(--action-of); }
+  .action-rem     { background: var(--action-rem); }
+  .action-cal     { background: var(--action-cal); }
+  .action-note    { background: var(--action-note); color: #000; }
+  .action-hotovo  { background: var(--action-hotovo); }
+  .action-spam    { background: var(--action-spam); }
+  .action-unsub   { background: var(--action-unsub); }
+  .action-skip    { background: var(--action-skip); color: #000; }
+  .action-undo    { background: var(--action-undo); color: #000; border: 1px solid #000; }
+
+  /* STATUS — kolečko se symbolem kazeťáku */
+  .status-circle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 11px;
+    line-height: 1;
+    vertical-align: middle;
+    flex-shrink: 0;
+  }
+  .status-novy       { background: var(--status-novy); }
+  .status-precteny   { background: var(--status-precteny); }
+  .status-cekajici   { background: var(--status-cekajici); }
+  .status-zpracovany { background: var(--status-zpracovany); }
+  .status-smazany    { background: var(--status-smazany); }
+
   {% block extra_style %}{% endblock %}
 </style>
 </head>
@@ -239,7 +347,7 @@
 <nav>
   <a class="nav-logo" href="/">
     <div class="nav-logo-wrap">
-      <img src="/static/logo.png" alt="BrogiASIST">
+      <img src="/static/logo.png" alt="BrogiASIST" width="40" height="40">
     </div>
     <span class="nav-logo-name">Brogi<em>ASIST</em></span>
     <span class="nav-badge">v1</span>
