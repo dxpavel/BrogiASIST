@@ -1,6 +1,6 @@
 # BrogiASIST — Architecture Reference v1
 
-> Stav: 2026-04-25. DEV fáze. DB, ingest, WebUI, klasifikace, IMAP akce, TG callback funkční. AI learning přes ChromaDB. Třívrstvý spam filtr (Llama + kontakty + Claude). PROD deployment plánován.
+> Stav: 2026-04-26 (verze 1.1). DEV fáze. DB, ingest, WebUI, klasifikace, IMAP akce, TG callback funkční. AI learning přes ChromaDB. Třívrstvý spam filtr (Llama + kontakty + Claude). Přílohy do OF přes base64 přenos. PROD deployment plánován.
 
 ---
 
@@ -286,6 +286,16 @@ docker exec brogi_scheduler python backfill_mark_read.py
 - Apple Bridge notes/add JXA escape bug (speciální znaky → SyntaxError 500; fix: json.dumps)
 - Claude API — rozšíření na plnou analýzu (nejen spam verifikace)
 - Auto-přidávání classification_rules z opakovaných korekcí
+
+## Implementováno v 1.1 (větev `1`, 2026-04-26)
+
+- **Base64 přenos příloh do Apple Bridge** — scheduler čte soubor z disku, base64 encode, posílá v `files: [{filename, content_base64, size_bytes}]` na `POST /omnifocus/add_task`. Limity: 50 MB / soubor, 100 MB / task. Funguje stejně na DEV (1 stroj) i PROD (2 stroje), bez sdíleného filesystemu.
+- **Apple Bridge ukládá přílohy** — dekóduje base64 a uloží do `~/Desktop/BrogiAssist/<email_id>/<filename>`. Funguje shodně na MacBook (DEV) i Apple Studio (PROD).
+- **file:// linky v OF note** — s `urllib.parse.quote(path, safe='/')` (percent-encoding pro non-ASCII a mezery). Klik v OF otevře PDF v Náhledu.
+- **Attachment kaskáda C → B → links_only** — pokus o JXA `make new attachment`, fallback AppleScript `make new attachment`, fallback file:// linky. Diagnostika v response (`attach_method`, `attach_errors`). V OF 4 oba scripting přístupy selhávají (`Can't get object` / `Can't make or move that element into that container`) — v aktuální verzi se vždy končí na `links_only` (vědomé rozhodnutí, viz lessons #32).
+- **`backfill_attachments.py`** — re-fetch příloh z IMAP pro emaily kde `has_attachments=TRUE`, `is_spam=FALSE` a v `attachments` 0 řádků. Používá Message-ID search + per-host folder syntaxi.
+- **Fix BUG-002** v `ingest_email.upsert_messages` — přílohy se ukládají i pro `is_new=False` (duplicate ON CONFLICT), pokud v `attachments` ještě nejsou a email NENÍ spam.
+- **`ensure_brogi_folders.py`** — idempotentní vytvoření kompletní BrogiASIST hierarchie na všech IMAP účtech (mitigace BUG-004 — Forpsi a Synology účty žádné `BrogiASIST/*` neměly).
 
 ## Implementováno v 2026-04 (tato session)
 

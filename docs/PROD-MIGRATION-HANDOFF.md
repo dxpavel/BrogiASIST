@@ -88,11 +88,15 @@ ssh dxpavel@10.55.2.117
 2. **Full Disk Access** na Apple Studiu — SSH (bash/python) potřebuje FDA pro přístup k Desktopu, Contacts, Calendar. Bez toho Apple Bridge selže.
 3. **Ollama** na BrogiServeru — není, nutno nainstalovat před startem scheduleru.
 4. **ChromaDB migrace** — embedding model `nomic-embed-text` musí být dostupný na BrogiServeru (přes Ollama) pro re-embedding.
-5. **Attachment složka** — na DEV je bind mount `/Users/pavel/Desktop/OmniFocus:/app/attachments`. Na PROD:
-   - BrogiServer scheduler uloží přílohu lokálně
-   - Pošle obsah base64 na Apple Bridge
-   - Bridge uloží do `~/Desktop/BrogiAssist/` na Apple Studiu
-   - Tato změna vyžaduje úpravu `telegram_callback.py` + `apple-bridge/main.py`
+5. **Attachment složka — base64 flow už HOTOVÝ v 1.1** (hotovo 2026-04-26 ve větvi `1`):
+   - `services/ingest/telegram_callback.py` — `_email_action("of")` čte přílohy z disku, base64 encode, posílá v `files: [...]` na bridge
+   - `services/apple-bridge/main.py` — `/omnifocus/add_task` dekóduje a ukládá do `~/Desktop/BrogiAssist/<email_id>/`
+   - **Pro PROD je třeba** (BUG-007 v `docs/BUGS.md`):
+     - V `docker-compose.yml` na PROD **odstranit** bind mount `./Desktop/OmniFocus:/app/attachments` (nebo lépe: `attachments` volume jen jako lokální Linux volume)
+     - V `services/ingest/ingest_email.py`: `_MAC_ATTACHMENTS_DIR` na PROD nepoužívat (replace `/app/attachments` → Mac path NEDÁVÁ smysl) — udělat tak, aby `attachments.storage_path` na PROD obsahoval **kontejnerovou cestu** (`/app/attachments/...`)
+     - V `telegram_callback.py:_read_attachments_b64`: pokud `_HOST_PREFIX` (`/Users/pavel/Desktop/OmniFocus`) není v cestě, číst přímo (zpětně kompatibilní)
+   - Po PROD migraci: Pavel uvidí přílohy **jen na Apple Studio v `~/Desktop/BrogiAssist/`**. Na BrogiServeru jsou interní cache (Pavel nepřístup, nepotřebuje).
+   - DEV stack po PROD startu **zastavit**, případně později smazat. `~/Desktop/OmniFocus/` na DEV-Macu lze ručně smazat (legacy).
 
 ---
 

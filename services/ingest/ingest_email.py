@@ -259,7 +259,7 @@ def upsert_messages(messages: list) -> tuple[int, int]:
             ON CONFLICT (source_id) DO UPDATE SET
                 body_text = COALESCE(EXCLUDED.body_text, email_messages.body_text),
                 unsubscribe_url = COALESCE(EXCLUDED.unsubscribe_url, email_messages.unsubscribe_url)
-            RETURNING id, (xmax = 0) AS is_new
+            RETURNING id, (xmax = 0) AS is_new, is_spam
         """, (
             "email",
             msg["source_id"],
@@ -275,13 +275,21 @@ def upsert_messages(messages: list) -> tuple[int, int]:
             msg.get("unsubscribe_url"),
         ))
         row = cur.fetchone()
-        email_uuid, is_new = row[0], row[1]
+        email_uuid, is_new, is_spam_db = row[0], row[1], row[2]
         if is_new:
             new_count += 1
-            # Ulož přílohy na disk a do DB (jen pro nové emaily)
-            _save_email_attachments(str(email_uuid), msg.get("attachments", []), cur)
         else:
             skip_count += 1
+
+        # Přílohy: ulož pokud (a) email má přílohy v MIME, (b) NENÍ spam,
+        # (c) ještě nejsou v DB. Pokrývá nový i duplicitní case (BUG-002 fix).
+        if msg.get("attachments") and not is_spam_db:
+            cur.execute(
+                "SELECT COUNT(*) FROM attachments WHERE source_type='email' AND source_record_id=%s",
+                (str(email_uuid),)
+            )
+            if cur.fetchone()[0] == 0:
+                _save_email_attachments(str(email_uuid), msg["attachments"], cur)
     conn.commit()
     conn.close()
     return new_count, skip_count

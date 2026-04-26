@@ -1,14 +1,20 @@
+import base64
 import subprocess
 import json
 import os
 import re
 import sqlite3
+import urllib.parse
 import caldav
 from datetime import datetime, timezone, timedelta, date
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
-app = FastAPI(title="BrogiASIST Apple Bridge", version="1.0")
+app = FastAPI(title="BrogiASIST Apple Bridge", version="1.1")
+
+# Cílová složka pro přílohy přijaté přes base64 z scheduleru.
+# Stejná lokace funguje na DEV (MacBook) i PROD (Apple Studio).
+ATTACHMENTS_BASE_DIR = os.path.expanduser("~/Desktop/BrogiAssist")
 
 CALDAV_URL = "https://caldav.icloud.com"
 CALDAV_USER = os.getenv("ICLOUD_USER", "dxpavel@me.com")
@@ -170,58 +176,231 @@ JSON.stringify({{ok: true, name: {name_js}}});
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _safe_filename(name: str) -> str:
+    """Stejná sanitizace jako v ingest_email._safe_filename — ať soubory ladí."""
+    name = re.sub(r"[^\w.\-]", "_", name or "")
+    return name[:200] or "attachment"
+
+
+def _save_inbound_attachments(email_id: str, files: list) -> list[str]:
+    """Decode + uloží přílohy z base64 payloadu na disk.
+
+    Vrací list absolutních cest k uloženým souborům (pro file:// linky).
+    Adresář: ~/Desktop/BrogiAssist/<email_id>/<safe_filename>.
+    """
+    if not files or not email_id:
+        return []
+    target_dir = os.path.join(ATTACHMENTS_BASE_DIR, email_id)
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"makedirs {target_dir} failed: {e}")
+
+    saved: list[str] = []
+    seen: set[str] = set()
+    for f in files:
+        fname = _safe_filename(f.get("filename", ""))
+        # Deduplikace pokud více souborů má stejný safe filename
+        if fname in seen:
+            base, ext = os.path.splitext(fname)
+            fname = f"{base}_{len(saved)+1}{ext}"
+        seen.add(fname)
+        b64 = f.get("content_base64", "")
+        if not b64:
+            continue
+        try:
+            data = base64.b64decode(b64, validate=True)
+        except Exception as e:
+            # Špatný base64 vyhodit — radši FAIL než tichý prázdný soubor.
+            raise HTTPException(status_code=400, detail=f"base64 decode failed for {fname}: {e}")
+        path = os.path.join(target_dir, fname)
+        try:
+            with open(path, "wb") as fd:
+                fd.write(data)
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"write {path} failed: {e}")
+        saved.append(path)
+    return saved
+
+
+def _jxa_attach_files(task_name: str, file_paths: list[str]) -> dict:
+    """Pokus C — JXA `make new attachment` s detailním errorem.
+
+    Najde poslední task v Inbox jménem task_name (heuristika — předpokládá single-user
+    flow během 1 sekundy mezi vytvořením a attachem) a pokusí se přiložit soubory.
+    Vrací {ok: bool, attached: int, errors: [str]}.
+    """
+    if not file_paths:
+        return {"ok": True, "attached": 0, "errors": []}
+    paths_js = json.dumps(file_paths)
+    name_js = json.dumps(task_name)
+    script = f"""
+const of2 = Application('OmniFocus');
+const doc = of2.defaultDocument;
+ObjC.import('Foundation');
+const wantedName = {name_js};
+const paths = {paths_js};
+const inbox = doc.inboxTasks;
+let target = null;
+for (let i = inbox.length - 1; i >= 0 && i > inbox.length - 50; i--) {{
+  try {{
+    if (inbox[i].name() === wantedName) {{ target = inbox[i]; break; }}
+  }} catch(e) {{}}
+}}
+if (!target) {{
+  JSON.stringify({{ok: false, attached: 0, errors: ['task not found in inbox']}});
+}} else {{
+  let attached = 0;
+  let errors = [];
+  for (const fp of paths) {{
+    try {{
+      const att = of2.FileAttachment({{file: Path(fp)}});
+      target.attachments.push(att);
+      attached++;
+    }} catch(e1) {{
+      try {{
+        of2.make({{new: 'fileAttachment', at: target.attachments,
+                   withProperties: {{file: Path(fp)}}}});
+        attached++;
+      }} catch(e2) {{
+        errors.push(fp.split('/').pop() + ': ' + (e2.message || String(e2)));
+      }}
+    }}
+  }}
+  JSON.stringify({{ok: attached === paths.length, attached: attached, errors: errors}});
+}}
+"""
+    try:
+        return run_jxa(script)
+    except Exception as e:
+        return {"ok": False, "attached": 0, "errors": [f"JXA exec: {e}"]}
+
+
+def _applescript_attach_files(task_name: str, file_paths: list[str]) -> dict:
+    """Pokus B — AppleScript `make new attachment` jako fallback po JXA.
+
+    AppleScript pracuje s OmniFocus přes `tell application` syntaxi. Pro file
+    attachment vyžaduje Mac alias / path string.
+    """
+    if not file_paths:
+        return {"ok": True, "attached": 0, "errors": []}
+    # Eskapovaný AppleScript string + POSIX file
+    safe_name = task_name.replace('"', '\\"')
+    attached = 0
+    errors: list[str] = []
+    for fp in file_paths:
+        safe_fp = fp.replace('"', '\\"')
+        script = f'''
+tell application "OmniFocus"
+    tell default document
+        set theTasks to (every inbox task whose name is "{safe_name}")
+        if (count of theTasks) is 0 then
+            return "ERR: task not found"
+        end if
+        set theTask to last item of theTasks
+        try
+            tell theTask
+                make new attachment with properties {{file name:POSIX file "{safe_fp}"}}
+            end tell
+            return "OK"
+        on error errMsg
+            return "ERR: " & errMsg
+        end try
+    end tell
+end tell
+'''
+        try:
+            out = run_applescript(script, timeout=20)
+            if out.startswith("OK"):
+                attached += 1
+            else:
+                errors.append(f"{os.path.basename(fp)}: {out}")
+        except Exception as e:
+            errors.append(f"{os.path.basename(fp)}: AppleScript exec: {e}")
+    return {"ok": attached == len(file_paths), "attached": attached, "errors": errors}
+
+
 @app.post("/omnifocus/add_task")
 def omnifocus_add_task(body: dict):
-    """Přidá task do OmniFocus inboxu. Volitelně přiloží soubory (file_paths)."""
-    name       = body.get("name", "") or ""
-    note       = body.get("note", "") or ""
-    flagged    = "true" if body.get("flagged", False) else "false"
-    file_paths = [p for p in (body.get("file_paths") or []) if p and os.path.exists(p)]
+    """Přidá task do OmniFocus inboxu.
 
-    # Vždy přidej file:// linky do noty (spolehlivé)
-    if file_paths:
-        links = "\n".join(f"📎 file://{p.replace(' ', '%20')}" for p in file_paths)
+    Body:
+      name    : str               — název tasku
+      note    : str               — poznámka
+      flagged : bool              — flag (default false)
+      email_id: str               — UUID emailu (pro adresář příloh)
+      files   : list[dict]        — [{filename, content_base64, size_bytes}]
+
+    Přílohy:
+      1) Dekódují se a ukládají na ~/Desktop/BrogiAssist/<email_id>/<filename>
+      2) Do note se přidají `file://` linky (vždy, jako spolehlivý fallback)
+      3) Pokus připojit jako fyzickou přílohu OF tasku — kaskáda C → B:
+         - C: JXA `make new attachment` s detailním errorem
+         - B: AppleScript fallback pokud JXA selže
+      Response obsahuje `attach_method` ('jxa'/'applescript'/'links_only')
+      a `attach_errors` pro diagnostiku.
+    """
+    name     = body.get("name", "") or ""
+    note     = body.get("note", "") or ""
+    flagged  = "true" if body.get("flagged", False) else "false"
+    email_id = body.get("email_id", "") or ""
+    files    = body.get("files") or []
+
+    saved_paths: list[str] = []
+    if files:
+        eid = email_id or "no_email_id"
+        saved_paths = _save_inbound_attachments(eid, files)
+
+    if saved_paths:
+        links = "\n".join(
+            f"📎 file://{urllib.parse.quote(p, safe='/')}" for p in saved_paths
+        )
         note = (note + "\n\n─────\nPřílohy:\n" + links) if note else ("Přílohy:\n" + links)
 
     name_js = json.dumps(name)
     note_js = json.dumps(note)
-
-    # JXA blok pro přikládání souborů přes NSFileWrapper (experimentální, try/catch)
-    attach_js = ""
-    if file_paths:
-        paths_js = json.dumps(file_paths)
-        attach_js = f"""
-// Pokus o přiložení souborů do OmniFocus (try/catch — fallback je file:// v note)
-try {{
-  ObjC.import('Foundation');
-  const filePaths = {paths_js};
-  const inbox = doc.inboxTasks;
-  const t = inbox[inbox.length - 1];
-  filePaths.forEach(function(fp) {{
-    try {{
-      of2.make({{
-        new: 'fileAttachment',
-        at: t.attachments,
-        withProperties: {{file: Path(fp)}}
-      }});
-    }} catch(ae) {{}}
-  }});
-}} catch(e) {{}}
-"""
-
-    script = f"""
+    create_script = f"""
 const of2 = Application('OmniFocus');
 const doc = of2.defaultDocument;
 const task = of2.Task({{name: {name_js}, note: {note_js}, flagged: {flagged}}});
 doc.inboxTasks.push(task);
-{attach_js}
 JSON.stringify({{ok: true, name: {name_js}}});
 """
     try:
-        result = run_jxa(script)
-        return {"ok": True, "name": name, "attachments": len(file_paths)}
+        run_jxa(create_script)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+    # Pokus o fyzickou přílohu (kaskáda C → B). file:// linky v note jsou už přidány.
+    attach_method = "links_only"
+    attach_errors: list[str] = []
+    attached_count = 0
+    if saved_paths:
+        c = _jxa_attach_files(name, saved_paths)
+        attached_count = c.get("attached", 0)
+        attach_errors = c.get("errors", [])
+        if c.get("ok"):
+            attach_method = "jxa"
+        else:
+            # JXA selhal — zkusíme AppleScript pro nepřipojené
+            unattached = saved_paths[attached_count:]
+            b = _applescript_attach_files(name, unattached)
+            if b.get("attached", 0) > 0:
+                attached_count += b["attached"]
+                attach_method = "applescript" if attached_count == len(saved_paths) else "mixed"
+            attach_errors += [f"AS: {e}" for e in b.get("errors", [])]
+
+    return {
+        "ok": True,
+        "name": name,
+        "attachments_saved": len(saved_paths),
+        "attachments_attached": attached_count,
+        "attach_method": attach_method,
+        "attach_errors": attach_errors,
+        "attachment_dir": os.path.join(ATTACHMENTS_BASE_DIR, email_id) if saved_paths else None,
+    }
 
 
 @app.get("/imessage/recent")

@@ -2,7 +2,9 @@
 BrogiASIST — Telegram callback handler (polling smyčka)
 Zpracovává kliknutí na inline tlačítka od Pavla.
 """
+import base64
 import logging
+import os
 import time
 from db import get_conn
 from telegram_notify import get_updates, answer_callback, send, delete_message
@@ -12,6 +14,63 @@ from chroma_client import store_email_action
 log = logging.getLogger(__name__)
 
 OFFSET_KEY = "tg_callback_offset"
+
+# Limity pro base64 přenos příloh do Apple Bridge (POST JSON).
+# Per-soubor 50 MB = stejné jako _MAX_ATTACHMENT_SIZE v ingest_email.py.
+# Per-task 100 MB = horní strop pro celý OF task (rozumný JSON payload).
+ATTACHMENT_MAX_SIZE  = 50 * 1024 * 1024
+ATTACHMENT_TASK_MAX  = 100 * 1024 * 1024
+
+# Mac cesta -> kontejnerová cesta. attachments.storage_path obsahuje Mac cestu
+# (bind mount ./Desktop/OmniFocus → /app/attachments). Pro čtení v kontejneru
+# musíme převést.
+_HOST_PREFIX      = "/Users/pavel/Desktop/OmniFocus"
+_CONTAINER_PREFIX = "/app/attachments"
+
+
+def _read_attachments_b64(file_paths: list[str], email_id: str) -> list[dict]:
+    """Načte přílohy z disku, vrací list dictů {filename, content_base64, size_bytes}.
+
+    Bere v úvahu per-file (50 MB) i per-task (100 MB) limit. Přesahující soubory
+    přeskočí + zaloguje warning. Soubory mimo bind mount (neexistující) přeskočí
+    bez chyby.
+    """
+    out: list[dict] = []
+    total = 0
+    for host_path in file_paths or []:
+        if not host_path:
+            continue
+        # Convert Mac → container path
+        cont_path = host_path.replace(_HOST_PREFIX, _CONTAINER_PREFIX, 1)
+        if not os.path.exists(cont_path):
+            log.warning(f"OF attachment missing on disk: email_id={email_id} path={cont_path}")
+            continue
+        try:
+            size = os.path.getsize(cont_path)
+        except OSError as e:
+            log.warning(f"OF attachment stat failed: email_id={email_id} {e}")
+            continue
+        if size > ATTACHMENT_MAX_SIZE:
+            log.warning(f"OF attachment over {ATTACHMENT_MAX_SIZE//1024//1024} MB skipped: email_id={email_id} {cont_path} ({size} B)")
+            continue
+        if total + size > ATTACHMENT_TASK_MAX:
+            log.warning(f"OF task attachments over {ATTACHMENT_TASK_MAX//1024//1024} MB total — skipping rest: email_id={email_id}")
+            break
+        try:
+            with open(cont_path, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            log.warning(f"OF attachment read failed: email_id={email_id} {e}")
+            continue
+        out.append({
+            "filename": os.path.basename(host_path),
+            "content_base64": base64.b64encode(data).decode("ascii"),
+            "size_bytes": size,
+        })
+        total += size
+    if out:
+        log.info(f"OF attachments prepared: email_id={email_id} count={len(out)} total_bytes={total}")
+    return out
 
 
 def _load_offset() -> int:
@@ -217,13 +276,15 @@ def _email_action(email_id: str, action: str):
         if not row:
             cur.close(); conn.close(); return
         subject, from_addr, body_text = row
-        # Přílohy uložené na disku (Mac cesta pro Apple Bridge)
+        # Přílohy: storage_path obsahuje Mac cestu, _read_attachments_b64
+        # převede na kontejnerovou a načte do base64 (per-file 50 MB, per-task 100 MB).
         cur.execute(
             "SELECT storage_path FROM attachments WHERE source_type='email' AND source_record_id=%s::uuid ORDER BY filename",
             (email_id,)
         )
         file_paths = [r[0] for r in cur.fetchall()]
         cur.close(); conn.close()
+        files_b64 = _read_attachments_b64(file_paths, str(email_id))
         body_preview = (body_text or "")[:1500].strip()
         note = f"Od: {from_addr}\n"
         if body_preview:
@@ -233,7 +294,8 @@ def _email_action(email_id: str, action: str):
             "name": subject or "(bez předmětu)",
             "note": note,
             "flagged": True,
-            "file_paths": file_paths,
+            "files": files_b64,
+            "email_id": str(email_id),
         }, "OF", str(email_id))
         if not ok:
             return

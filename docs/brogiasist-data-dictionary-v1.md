@@ -1,8 +1,8 @@
 ---
 Název: Datový a procesní slovník BrogiASIST
 Soubor: docs/brogiasist-data-dictionary-v1.md
-Verze: 4.1
-Poslední aktualizace: 2026-04-25
+Verze: 4.2 (release 1.1)
+Poslední aktualizace: 2026-04-26
 Popis: DB schéma, procesní tok, AI vrstvy, Telegram pipeline — podle reality v kódu
 ---
 
@@ -346,23 +346,24 @@ Cache výsledků Claude verifikace spamu — jeden záznam na odesílatele.
 
 ---
 
-### `attachments` (migrace — existuje v DB)
+### `attachments` (migrace 001)
 
 Reference na soubory příloh emailů uložených na disku.
 
 | Sloupec | Typ | Popis |
 |---|---|---|
-| `id` | UUID PK | |
-| `source_type` | VARCHAR | `email` |
+| `id` | UUID PK | gen_random_uuid() |
+| `source_type` | VARCHAR(32) | `email` |
 | `source_record_id` | UUID | FK → `email_messages.id` (::uuid cast nutný v dotazu) |
-| `filename` | VARCHAR | bezpečný název souboru |
-| `file_path` | TEXT | cesta v kontejneru (`/app/attachments/...`) |
-| `mac_path` | TEXT | cesta na Mac hostu (`/Users/pavel/Desktop/OmniFocus/...`) |
-| `content_type` | VARCHAR | MIME type |
-| `size_bytes` | BIGINT | velikost |
-| `saved_at` | TIMESTAMPTZ | |
+| `filename` | VARCHAR(512) | původní název souboru z MIME |
+| `storage_path` | VARCHAR(1024) | **Mac cesta** (`/Users/pavel/Desktop/OmniFocus/<email_uuid>/<safe_filename>`). Po replace na kontejnerovou (`/app/attachments/...`) lze číst v Docker. |
+| `mime_type` | VARCHAR(128) | MIME type |
+| `size_bytes` | INTEGER | velikost |
+| `ingested_at` | TIMESTAMPTZ | DEFAULT NOW() |
 
-**Bind mount:** `/Users/pavel/Desktop/OmniFocus:/app/attachments` — scheduler zapisuje, Apple Bridge čte přes mac_path.
+**Bind mount (DEV):** `/Users/pavel/Desktop/OmniFocus:/app/attachments` — scheduler zapisuje (přes Mac cestu), Apple Bridge na DEV by mohl číst přímo z `~/Desktop/OmniFocus/`. Na PROD bind mount neexistuje — scheduler čte přes container path a posílá Apple Bridge přílohy přes base64 (viz endpoint `/omnifocus/add_task` níže).
+
+**Pravidlo (1.1):** ukládá se **jen pro non-spam emaily** (`is_spam=FALSE`). Spam přílohy se nestahují (BUG-002 fix v `ingest_email.upsert_messages`).
 
 ---
 
@@ -476,10 +477,37 @@ FastAPI na hostu, port 9100, autostart přes launchd.
 | GET | `/contacts/all` | kontakty ze sqlite AddressBook |
 | GET | `/calendar/events?days=60` | události z iCloud Calendar přes CalDAV |
 
-**POST /omnifocus/add_task body:**
+**POST /omnifocus/add_task body (1.1):**
 ```json
-{"name": "název tasku", "note": "poznámka", "flagged": true}
+{
+  "name": "název tasku",
+  "note": "poznámka",
+  "flagged": true,
+  "email_id": "UUID emailu (pro adresář příloh)",
+  "files": [
+    {"filename": "doc.pdf", "content_base64": "JVBERi0...", "size_bytes": 12345}
+  ]
+}
 ```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "name": "...",
+  "attachments_saved": 3,        // počet souborů uložených na disk
+  "attachments_attached": 0,     // počet fyzicky připojených (OF 4 nepodporuje → 0)
+  "attach_method": "links_only", // "jxa" | "applescript" | "mixed" | "links_only"
+  "attach_errors": ["..."],      // konkrétní chyby z JXA/AppleScript
+  "attachment_dir": "/Users/pavel/Desktop/BrogiAssist/<email_id>"
+}
+```
+
+**Chování:**
+- Bridge dekóduje base64 a uloží přílohy do `~/Desktop/BrogiAssist/<email_id>/<safe_filename>`
+- Sestaví `file://` linky (s `urllib.parse.quote` pro non-ASCII) a vloží do note
+- Pokus o fyzické připojení v kaskádě JXA → AppleScript (lessons #32 — v OF 4 obě selhávají, končí na `links_only`)
+- Limity: per-soubor 50 MB, per-task 100 MB (definováno na scheduler straně)
 
 **Restart:**
 ```bash

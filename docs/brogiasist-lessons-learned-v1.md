@@ -1,7 +1,7 @@
 # BrogiASIST — Lessons Learned v1
 
 > Jazyk: česky. Určeno pro budoucí vývojáře nebo AI asistenty, kteří na projektu pracují.
-> Stav: 2026-04-25. Aktualizuj při každém novém zjištění.
+> Stav: 2026-04-26 (release 1.1). Aktualizuj při každém novém zjištění.
 
 ---
 
@@ -616,6 +616,94 @@ Tři Lahoda spam záznamy musely být smazány ručně přes Chroma HTTP API.
 
 ### Řešení (budoucí)
 Zvažit rozšíření `_is_contact()` o fuzzy match na jméno (first_name + last_name), pokud je emails[] prázdný.
+
+---
+
+## 32. OmniFocus 4 — fyzické attachmenty přes scripting NEJDOU (2026-04-26)
+
+### Symptom
+Pokus o `make new attachment` přes JXA i AppleScript skončí chybou:
+```
+JXA:         Can't get object.
+AppleScript: OmniFocus got an error: Can't make or move that element into that container.
+```
+
+### Co bylo testováno (kaskáda)
+1. JXA `task.attachments.push(of2.FileAttachment({file: Path(fp)}))` → `Can't get object`
+2. JXA `of2.make({new: 'fileAttachment', at: target.attachments, withProperties: {file: Path(fp)}})` → totéž
+3. AppleScript `make new attachment with properties {file name:POSIX file "..."}` → `Can't make or move that element into that container`
+4. NSFileWrapper přes ObjC bridge (původní experiment) → tichý fail
+
+### Závěr
+**Klasické scripting API (JXA/AppleScript dictionary) v OF 4 nepřijímá nové file attachmenty.** Není to bug v kódu — OF API to nedovoluje. Pravděpodobně je `attachments` element v dictionary read-only nebo make/append není podporován pro tento typ.
+
+### Dostupné alternativy
+| Cesta | Stav | Poznámka |
+|---|---|---|
+| **D — file:// linky v note** | ✅ aktuální řešení | 1 click → otevře v Náhledu |
+| **E — Omni Automation (OmniJS)** | ⚠️ neimplementováno | JS běžící uvnitř OF, moderní API; vyžaduje plugin schválení + možná narazí na sandbox pro `~/Desktop/BrogiAssist/` |
+| **F — OmniFocus URL scheme** | ❌ dead-end | `omnifocus:///add?...` neumí attachment payload |
+
+### Aktuální chování (1.1)
+Apple Bridge `/omnifocus/add_task` má kaskádu C → B → links_only. C+B se zkoušejí, oba selžou, končí na `attach_method=links_only`. Response obsahuje `attach_errors` pro audit.
+
+---
+
+## 33. Base64 přílohy přes JSON — funkční pattern pro DEV i PROD (2026-04-26)
+
+### Problém
+Přílohy emailů se musí dostat ze scheduleru (Linux Docker container, BrogiServer na PROD) do Apple Bridge (macOS proces na Apple Studio na PROD). Sdílený filesystem mezi stroji není (různé sítě, různé OS). Bind mount funguje jen na DEV (1 stroj).
+
+### Řešení (v 1.1)
+- Scheduler čte soubor přes container path (po replace `Mac path → /app/attachments`)
+- Encodeuje base64 (`base64.b64encode(data).decode("ascii")`)
+- Posílá v `POST /omnifocus/add_task` jako pole `files: [{filename, content_base64, size_bytes}]`
+- Bridge dekóduje a ukládá do `~/Desktop/BrogiAssist/<email_id>/<filename>`
+
+### Limity (záměrné)
+- Per-soubor: **50 MB** (= `_MAX_ATTACHMENT_SIZE` v `ingest_email.py`)
+- Per-task: **100 MB** (rozumný JSON payload — větší by zatížil scheduler i bridge)
+- Soubory přesahující limit jsou přeskočeny + log warning
+- Base64 zvětší payload ~33 % → 100 MB binary = ~133 MB JSON
+
+### Funkční na (testováno 2026-04-26)
+- **DEV**: scheduler v Dockeru → host.docker.internal:9100 → bridge → ~/Desktop/BrogiAssist/ ✅
+- **PROD plánováno**: scheduler na BrogiServer → 10.55.2.117:9100 → bridge na Apple Studio → ~/Desktop/BrogiAssist/
+
+### Důležité pro fail-recovery
+Bridge vrací `attachments_saved` v response. Scheduler ho neukládá (loguje do `OF created: status=200`). Při debug situaci ověřit `attachment_dir` přímo na disku (`ls ~/Desktop/BrogiAssist/<email_id>/`).
+
+---
+
+## 34. file:// URL pro non-ASCII cesty — `urllib.parse.quote` povinné (2026-04-26)
+
+### Problém
+file:// URL s českými znaky (`ř`, `Č`, `ý`) v cestě nebo názvu souboru macOS odmítne otevřít — kliknutí v OmniFocus / Mail / TextEdit nic neudělá nebo otevře "URL not found".
+
+### Špatně (původní kód)
+```python
+# Řeší jen mezery, non-ASCII zůstává nevalidní
+url = f"file://{path.replace(' ', '%20')}"
+```
+
+### Správně (1.1)
+```python
+import urllib.parse
+url = f"file://{urllib.parse.quote(path, safe='/')}"
+# /Users/pavel/Desktop/.../elektřina.pdf
+# →
+# /Users/pavel/Desktop/.../elekt%C5%99ina.pdf
+```
+
+`safe='/'` zachová separátory cesty, vše ostatní (mezery, diakritiku, speciální znaky) zakóduje jako UTF-8 percent-encoded.
+
+### Příklad
+```
+ř   → %C5%99
+Č   → %C4%8C
+ý   → %C3%BD
+mezera → %20
+```
 
 ---
 
