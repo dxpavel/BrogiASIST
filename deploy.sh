@@ -1,5 +1,6 @@
 #!/bin/bash
 # BrogiASIST PROD deploy script — určeno pro VM 103 (10.55.2.231)
+# Workflow: lokálně edit → git push origin main → ssh pavel@10.55.2.231 → cd brogiasist && ./deploy.sh
 #
 # Co dělá:
 #   1. git pull origin main            ← stáhne změny z GitHub
