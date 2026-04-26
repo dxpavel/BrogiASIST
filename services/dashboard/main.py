@@ -33,7 +33,7 @@ def get_db_status() -> dict:
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
 
-        tables = ["email_messages", "rss_articles", "youtube_videos", "mantis_issues", "omnifocus_tasks", "actions", "sessions", "config", "attachments"]
+        tables = ["email_messages", "rss_articles", "youtube_videos", "mantis_issues", "omnifocus_tasks", "apple_contacts", "actions", "sessions", "config", "attachments"]
         counts = {}
         for t in tables:
             cur.execute(f"SELECT COUNT(*) FROM {t}")
