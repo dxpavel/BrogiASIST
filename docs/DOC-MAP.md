@@ -39,8 +39,9 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 | Soubor | Popis |
 |---|---|
 | `CONTEXT-NEW-CHAT.md` | Stav projektu — aktualizovat na konci session |
-| `SESSION-HANDOFF-BRANCH1.md` | Handoff pro branch `1` — implementace base64 příloh (DEV) |
-| `PROD-MIGRATION-HANDOFF.md` | Handoff pro PROD migraci — 7 fází (BrogiServer + PajaAppleStudio) |
+| `SESSION-HANDOFF-BRANCH1.md` | Handoff pro branch `1` — implementace base64 příloh (DEV) — **DONE 1.1** |
+| `SESSION-HANDOFF-PROD.md` | Handoff pro PROD migraci session — startup prompt + co zvážit + co nedělat |
+| `PROD-MIGRATION-HANDOFF.md` | Detailní postup migrace — 7 fází (BrogiServer + PajaAppleStudio), autoritativní reference |
 
 ---
 
