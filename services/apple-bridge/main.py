@@ -1,11 +1,13 @@
 from __future__ import annotations  # Python 3.9 kompat (PROD na Apple Studio) — `str | None` syntax
 
 import base64
-import subprocess
 import json
 import os
 import re
+import select
+import signal
 import sqlite3
+import time
 import urllib.parse
 import caldav
 from datetime import datetime, timezone, timedelta, date
@@ -26,24 +28,89 @@ CALDAV_SKIP = {"Garmin Connect", "Siri Suggestions", "Birthdays", "Narozeniny",
                "České státní svátky", "Kalendář bez názvu"}
 
 
+_OSASCRIPT_PATH = "/usr/bin/osascript"
+
+
+def _spawn_osascript(args: list[str], timeout: int) -> tuple[int, str, str]:
+    """Spustí osascript přes os.posix_spawn() místo subprocess.run().
+
+    Důvod: macOS bug (BUG-008) — fork() v multi-threaded Python procesu
+    (uvicorn + FastAPI threadpool) způsobuje SIGSEGV v Network.framework
+    atfork hook. posix_spawn je atomický syscall, neforkuje, neprovádí
+    kopii address space → atfork hooks se nevolají → bug se neprojeví.
+
+    Return: (returncode, stdout, stderr) — kompatibilní s subprocess.CompletedProcess.
+    """
+    stdout_r, stdout_w = os.pipe()
+    stderr_r, stderr_w = os.pipe()
+    file_actions = [
+        (os.POSIX_SPAWN_DUP2, stdout_w, 1),
+        (os.POSIX_SPAWN_CLOSE, stdout_r),
+        (os.POSIX_SPAWN_DUP2, stderr_w, 2),
+        (os.POSIX_SPAWN_CLOSE, stderr_r),
+    ]
+    try:
+        pid = os.posix_spawn(_OSASCRIPT_PATH, args, os.environ, file_actions=file_actions)
+    except OSError:
+        for fd in (stdout_r, stdout_w, stderr_r, stderr_w):
+            try: os.close(fd)
+            except OSError: pass
+        raise
+
+    os.close(stdout_w)
+    os.close(stderr_w)
+
+    deadline = time.monotonic() + timeout
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    open_fds = {stdout_r, stderr_r}
+
+    try:
+        while open_fds:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                try: os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+                os.waitpid(pid, 0)
+                raise TimeoutError(f"osascript timed out after {timeout}s")
+
+            ready, _, _ = select.select(list(open_fds), [], [], remaining)
+            if not ready:
+                continue
+            for fd in ready:
+                data = os.read(fd, 65536)
+                if not data:
+                    open_fds.discard(fd)
+                    os.close(fd)
+                    continue
+                if fd == stdout_r:
+                    stdout_chunks.append(data)
+                else:
+                    stderr_chunks.append(data)
+        _, status = os.waitpid(pid, 0)
+        returncode = os.waitstatus_to_exitcode(status)
+    finally:
+        for fd in open_fds:
+            try: os.close(fd)
+            except OSError: pass
+
+    stdout = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+    stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+    return (returncode, stdout, stderr)
+
+
 def run_applescript(script: str, timeout: int = 30) -> str:
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True, text=True, timeout=timeout
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip())
-    return result.stdout.strip()
+    rc, out, err = _spawn_osascript(["osascript", "-e", script], timeout)
+    if rc != 0:
+        raise RuntimeError(err.strip())
+    return out.strip()
 
 
 def run_jxa(script: str, timeout: int = 90) -> any:
-    result = subprocess.run(
-        ["osascript", "-l", "JavaScript", "-e", script],
-        capture_output=True, text=True, timeout=timeout
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip())
-    return json.loads(result.stdout.strip())
+    rc, out, err = _spawn_osascript(["osascript", "-l", "JavaScript", "-e", script], timeout)
+    if rc != 0:
+        raise RuntimeError(err.strip())
+    return json.loads(out.strip())
 
 
 @app.get("/health")
