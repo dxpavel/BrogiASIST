@@ -10,6 +10,7 @@ from html import escape as html_escape
 from db import get_conn
 from telegram_notify import send_spam_check, send as tg_send
 from imap_actions import move_to_trash, move_to_brogi_folder, TYP_FOLDER
+from decision_engine import evaluate_email
 
 log = logging.getLogger(__name__)
 
@@ -227,6 +228,46 @@ def classify_new_emails(limit: int = 20):
             if not firma:
                 firma = "PRIVATE"
 
+            # Body extrakce — potřebné pro decision engine i Llamu
+            body = ""
+            if isinstance(payload, dict):
+                body = payload.get("body_text") or payload.get("body", "") or ""
+
+            # 1.5. Decision engine — konfigurovatelná pravidla z DB
+            #      (header check, group match, chroma vzor, AI fallback)
+            try:
+                decision = evaluate_email({
+                    "from_address": from_addr,
+                    "subject": subject,
+                    "raw_payload": payload,
+                    "body_text": body,
+                })
+            except Exception as e:
+                log.warning(f"decision_engine failed: {e}")
+                decision = {"end_pipeline": False, "skip": False, "matched_rules": []}
+
+            # Bot vlastní reply (X-Brogi-Auto header) → neklasifikujeme
+            if decision.get("skip"):
+                log.info(f"Decision skip: rules={decision.get('matched_rules')}")
+                continue
+
+            # Pravidlo dalo finální TYP (LIST, ENCRYPTED, INFO/OOO, ERROR/bounce)
+            if decision.get("end_pipeline") and decision.get("typ"):
+                rule_typ = decision["typ"]
+                _save_classification(email_id, firma, rule_typ, None, False, 1.0)
+                log.info(f"Decision: TYP={rule_typ} via rules={decision.get('matched_rules')}")
+                continue
+
+            # Chroma vzor — aplikuj zapamatovanou akci místo AI
+            if decision.get("remembered_action"):
+                ra_action = (decision.get("remembered_action") or {}).get("action")
+                log.info(f"Decision: chroma vzor → action={ra_action} (TODO: action-wiring v blockeru D)")
+                # Pro teď pokračujeme na AI; full action-wiring přijde v D
+
+            # decision flags (is_personal, force_tg_notify, no_auto_*) zatím
+            # ignorujeme v existující Llama pipeline — využijí se v blockeru D
+            # při refactoru klasifikace na novou semantiku.
+
             # 2a. Deterministická klasifikace pozvánky z kalendáře
             if subject and re.match(r'^invitation:', subject.strip(), re.IGNORECASE):
                 _save_classification(email_id, firma, "POZVÁNKA", None, False, 1.0)
@@ -247,10 +288,7 @@ def classify_new_emails(limit: int = 20):
             if in_contacts:
                 log.info(f"KONTAKT whitelist (no-spam): {_extract_email(from_addr or '')}")
 
-            # 3. Llama klasifikace
-            body = ""
-            if isinstance(payload, dict):
-                body = payload.get("body_text") or payload.get("body", "") or ""
+            # 3. Llama klasifikace (body už je extrahované z bodu 1)
             result = _llama_classify(from_addr, subject, body)
             if not result:
                 continue
