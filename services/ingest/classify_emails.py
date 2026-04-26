@@ -36,17 +36,28 @@ PROMPT_TEMPLATE = """Klasifikuj tento email. Vrať POUZE JSON bez komentářů.
 
 Od: {from_addr}
 Předmět: {subject}
-Obsah (prvních 400 znaků): {body}
+Obsah (prvních 500 znaků): {body}
 
 Vrať JSON:
 {{
   "firma": "<DXPSOLUTIONS|MBANK|ZAMECNICTVI|PRIVATE>",
-  "typ": "<SPAM|NABÍDKA|ÚKOL|INFO|FAKTURA|POTVRZENÍ|NEWSLETTER|NOTIFIKACE|POZVÁNKA>",
+  "typ": "<ÚKOL|DOKLAD|NABÍDKA|NOTIFIKACE|POZVÁNKA|INFO>",
   "task_status": "<ČEKÁ-NA-MĚ|ČEKÁ-NA-ODPOVĚĎ|null>",
   "is_spam": <true|false>,
   "confidence": <0.0-1.0>,
   "reason": "<1 věta proč>"
-}}"""
+}}
+
+Pravidla pro TYP (per spec brogiasist-semantics-v1):
+- ÚKOL: někdo na mě v obsahu čeká nebo ode mě něco očekává
+- DOKLAD: faktura, výpis, objednávka, paragon, formální papírová stopa
+- NABÍDKA: komerční sdělení (kup si, sleva, akce)
+- NOTIFIKACE: systém/služba mě informuje o události (vč. potvrzení objednávky, login alertů)
+- POZVÁNKA: Calendar invite (subject 'Invitation:' nebo .ics)
+- INFO: vše ostatní informativní (newsletter, blog update, OOO reply)
+
+POZNÁMKA: TYPy ERROR (bounce/DSN), LIST (mailing list), ENCRYPTED (S/MIME) detekuje
+header check v decision_rules engine PŘED Llamou — sem nepřijdou."""
 
 
 def _check_rules(from_addr: str) -> dict | None:

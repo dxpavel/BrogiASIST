@@ -11,40 +11,106 @@ from chroma_client import find_repeat_action
 log = logging.getLogger(__name__)
 
 TYP_ICON = {
+    # Email Semantics v1 (per docs/brogiasist-semantics-v1.md sekce 1)
     "ÚKOL":       "📋",
-    "FAKTURA":    "📄",
-    "NOTIFIKACE": "🔔",
+    "DOKLAD":     "📄",
     "NABÍDKA":    "💼",
+    "NOTIFIKACE": "🔔",
+    "POZVÁNKA":   "📅",
     "INFO":       "ℹ️",
+    "ERROR":      "⚠️",
+    "LIST":       "📰",
+    "ENCRYPTED":  "🔒",
+    # Legacy (fallback dokud staré emaily klasifikované neproletí)
+    "FAKTURA":    "📄",
     "NEWSLETTER": "📰",
     "POTVRZENÍ":  "✔️",
 }
 
-UNIVERSAL_BUTTONS = [
-    [
-        {"text": "📋 OF",        "callback_data": "email:of:{id}"},
-        {"text": "⏰ REM",        "callback_data": "email:rem:{id}"},
-        {"text": "📅 CAL",        "callback_data": "email:cal:{id}"},
-    ],
-    [
-        {"text": "📝 NOTE",       "callback_data": "email:note:{id}"},
-        {"text": "✅ Hotovo",    "callback_data": "email:hotovo:{id}"},
-        {"text": "👁️ Přečteno", "callback_data": "email:precteno:{id}"},
-    ],
-    [
-        {"text": "⏳ Čeká",      "callback_data": "email:ceka:{id}"},
-        {"text": "🗑️ Spam",     "callback_data": "email:spam:{id}"},
-        {"text": "⏭️ Skip",     "callback_data": "email:skip:{id}"},
-        {"text": "🚫 Unsub",    "callback_data": "email:unsub:{id}"},
-    ],
-]
-
-SKIP_TYPY = {"SPAM", "ESHOP"}
+# Per-TYP TG tlačítka (per spec sekce 7)
+SKIP_TYPY = {"SPAM", "ESHOP", "LIST"}  # LIST: auto-2hotovo, žádná TG zpráva
 
 
-def _render_buttons(typ: str, email_id: str) -> list:
-    return [[{**b, "callback_data": b["callback_data"].replace("{id}", email_id)} for b in row]
-            for row in UNIVERSAL_BUTTONS]
+def _btn(label: str, action: str, eid: str) -> dict:
+    return {"text": label, "callback_data": f"email:{action}:{eid}"}
+
+
+def _buttons_for_typ(typ: str, email_id: str, has_unsubscribe: bool = False) -> list:
+    """Vrátí inline_keyboard rows pro daný TYP (per spec sekce 7).
+
+    Callback_data formát zůstává krátký (email:<action>:<id>) — UI text
+    používá '2of' notaci (per spec semantika prefix '2' = 'to').
+    """
+    eid = email_id
+
+    if typ == "ÚKOL":
+        return [
+            [_btn("✅ 2hotovo", "hotovo", eid),
+             _btn("📥 2of",     "of",     eid),
+             _btn("⏰ 2rem",    "rem",    eid)],
+            [_btn("📝 2note",   "note",   eid),
+             _btn("⏭ 2skip",   "skip",   eid),
+             _btn("🗑 2spam",   "spam",   eid)],
+        ]
+    if typ == "DOKLAD" or typ == "FAKTURA":  # legacy fallback
+        return [
+            [_btn("📥 2of",     "of",     eid),
+             _btn("📝 2note",   "note",   eid)],
+            [_btn("✅ 2hotovo", "hotovo", eid),
+             _btn("⏭ 2skip",   "skip",   eid)],
+        ]
+    if typ == "NABÍDKA":
+        return [
+            [_btn("📝 2note",   "note",   eid),
+             _btn("🚫 2unsub",  "unsub",  eid)],
+            [_btn("🗑 2spam",   "spam",   eid),
+             _btn("⏭ 2skip",   "skip",   eid)],
+        ]
+    if typ == "NOTIFIKACE" or typ == "POTVRZENÍ":
+        return [
+            [_btn("✅ 2hotovo", "hotovo", eid),
+             _btn("⏭ 2skip",   "skip",   eid),
+             _btn("🗑 2spam",   "spam",   eid)],
+        ]
+    if typ == "POZVÁNKA":
+        # TODO blocker D3: '📅 2cal+Accept' a '❌ Decline' tlačítka —
+        # vyžadují Apple Bridge POST /calendar/reply endpoint pro odeslání
+        # Accept/Decline replies pozvateli (přes Mail.app AppleScript).
+        # Zatím jen 2cal (vytvoří event) + skip/spam.
+        return [
+            [_btn("📅 2cal",   "cal",  eid),
+             _btn("⏭ 2skip",  "skip", eid),
+             _btn("🗑 2spam",  "spam", eid)],
+        ]
+    if typ == "INFO" or typ == "NEWSLETTER":
+        row = [_btn("✅ 2hotovo", "hotovo", eid),
+               _btn("⏭ 2skip",   "skip",   eid)]
+        if has_unsubscribe:
+            row.append(_btn("🚫 2unsub", "unsub", eid))
+        return [row]
+    if typ == "ERROR":
+        return [
+            [_btn("✅ 2hotovo", "hotovo", eid),
+             _btn("⏭ 2skip",   "skip",   eid)],
+        ]
+    if typ == "ENCRYPTED":
+        return [
+            [_btn("👁 Otevřu sám", "precteno", eid),
+             _btn("⏭ 2skip",      "skip",     eid)],
+        ]
+
+    # Unknown TYP — fallback "univerzal"
+    return [
+        [_btn("📥 2of", "of", eid), _btn("⏰ 2rem", "rem", eid),
+         _btn("📅 2cal", "cal", eid), _btn("📝 2note", "note", eid)],
+        [_btn("✅ 2hotovo", "hotovo", eid), _btn("⏭ 2skip", "skip", eid),
+         _btn("🗑 2spam", "spam", eid), _btn("🚫 2unsub", "unsub", eid)],
+    ]
+
+
+def _render_buttons(typ: str, email_id: str, has_unsubscribe: bool = False) -> list:
+    """Backward-compat alias pro starší volání."""
+    return _buttons_for_typ(typ, email_id, has_unsubscribe)
 
 
 def notify_classified_emails():
