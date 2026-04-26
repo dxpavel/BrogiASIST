@@ -583,18 +583,104 @@ JSON.stringify(result);
 
 @app.get("/contacts/all")
 def contacts_all():
-    """Agreguje kontakty + jejich skupiny ze VŠECH AddressBook DB (CardDAV účty).
+    """Vrátí kontakty + jejich skupiny přes JXA volání Contacts.app.
 
-    macOS ukládá kontakty per-account v ~/Library/Application Support/AddressBook/:
-    - top-level AddressBook-v22.abcddb (lokální)
-    - Sources/<UUID>/AddressBook-v22.abcddb (iCloud, Google, Exchange, ...)
+    Proč JXA a ne sqlite3 přímo?
+    macOS launchd-spawned procesy nedědí Full Disk Access (na rozdíl od
+    Terminal-spawned). Sqlite3 read DB v ~/Library/Application Support/
+    AddressBook/ vyžaduje FDA → padá s PermissionError pro Bridge.
+    JXA `Application('Contacts')` používá AppleEvents (= "Automation"
+    permission), kterou Bridge má (stejná cesta funguje pro OmniFocus,
+    Notes, Calendar, Reminders).
 
-    Tato funkce projde všechny *.abcddb soubory, agreguje kontakty (dedup po
-    ZUNIQUEID), emaily, telefony a skupiny. Prázdné DB tiché skipuje.
+    Při prvním volání macOS vyhodí dialog "Apple Bridge requests Contacts
+    access" — uživatel klikne Allow → funguje dál bez ptaní.
+    """
+    script = r'''
+const contacts = Application('Contacts');
+contacts.includeStandardAdditions = false;
 
-    Vyžaduje Full Disk Access pro Python interpreter — bez něj sqlite3 padne
-    s PermissionError nebo OperationalError. V tom případě vrací 200 s ok=false
-    a error='no_fda' (graceful degrade pro scheduler).
+// Mapování person_id → [group_name, ...]
+const groupMap = {};
+const groups = contacts.groups();
+for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    const gname = g.name();
+    if (!gname) continue;
+    let members;
+    try { members = g.people(); } catch (e) { continue; }
+    for (let j = 0; j < members.length; j++) {
+        const pid = members[j].id();
+        if (!groupMap[pid]) groupMap[pid] = [];
+        groupMap[pid].push(gname);
+    }
+}
+
+// Kontakty
+const result = [];
+const people = contacts.people();
+for (let i = 0; i < people.length; i++) {
+    const p = people[i];
+    const pid = p.id();
+    let emails = [];
+    try {
+        const ee = p.emails();
+        for (let k = 0; k < ee.length; k++) {
+            emails.push({label: ee[k].label() || '', value: ee[k].value() || ''});
+        }
+    } catch (e) {}
+    let phones = [];
+    try {
+        const pp = p.phones();
+        for (let k = 0; k < pp.length; k++) {
+            phones.push({label: pp[k].label() || '', value: pp[k].value() || ''});
+        }
+    } catch (e) {}
+    let mod = null;
+    try { const m = p.modificationDate(); if (m) mod = m.toISOString(); } catch (e) {}
+    result.push({
+        id: pid,
+        first: p.firstName() || null,
+        last: p.lastName() || null,
+        org: p.organization() || null,
+        modified_at: mod,
+        emails: emails,
+        phones: phones,
+        groups: groupMap[pid] || [],
+    });
+}
+JSON.stringify(result);
+'''
+    try:
+        contacts_data = run_jxa(script, timeout=120)
+        if not isinstance(contacts_data, list):
+            return JSONResponse({
+                "ok": False, "error": "jxa_unexpected_type",
+                "message": f"JXA vrátilo {type(contacts_data).__name__}, čekal jsem list",
+                "count": 0, "contacts": [],
+            })
+        return {"ok": True, "count": len(contacts_data), "contacts": contacts_data}
+    except RuntimeError as e:
+        msg = str(e)
+        # "Not authorised to send Apple events" = Pavel ještě nedovolil
+        if "authoris" in msg.lower() or "1743" in msg or "permission" in msg.lower():
+            return JSONResponse({
+                "ok": False, "error": "no_automation_permission",
+                "message": "Bridge nemá AppleEvents permission pro Contacts. Při prvním volání macOS dialog → Allow. Pokud byl odmítnut: System Settings → Privacy & Security → Automation → Apple Bridge → zaškrtni Contacts.",
+                "count": 0, "contacts": [],
+            })
+        raise HTTPException(status_code=500, detail=msg)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/contacts/all_sqlite")
+def contacts_all_sqlite():
+    """LEGACY/FALLBACK: agreguje kontakty ze sqlite DB přímo.
+
+    Vyžaduje Full Disk Access (Bridge launchd typicky nedostává) →
+    vrací 200 s error='no_fda' pokud DB nedostupná. Ponecháno pro
+    případ, že FDA bude později fungovat (proper signed app bundle).
     """
     base = os.path.expanduser("~/Library/Application Support/AddressBook")
     db_paths: list[str] = []
