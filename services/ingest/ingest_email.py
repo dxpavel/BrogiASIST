@@ -222,6 +222,34 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
             body_text = _extract_body(msg)
             unsubscribe_url = _find_unsubscribe(msg, body_text)
 
+            # RFC 5322 / 2369 hlavičky pro decision_rules + threading + spam detection
+            # str() konverze ošetří email.header.Header objekt (multi-line, encoded)
+            def _hdr(name: str):
+                v = msg.get(name)
+                return str(v) if v is not None else None
+
+            headers = {
+                # threading (RFC 5322 §3.6.4)
+                "Message-ID":       _hdr("Message-ID"),
+                "In-Reply-To":      _hdr("In-Reply-To"),
+                "References":       _hdr("References"),
+                # mailing list (RFC 2369)
+                "List-Id":          _hdr("List-Id"),
+                "List-Unsubscribe": _hdr("List-Unsubscribe"),
+                "List-Post":        _hdr("List-Post"),
+                # auto-replies / bounces (RFC 3834 / RFC 3464)
+                "Auto-Submitted":   _hdr("Auto-Submitted"),
+                # encrypted detection (S/MIME, PGP)
+                "Content-Type":     _hdr("Content-Type"),
+                # akčnost (TO vs CC vs BCC)
+                "Cc":               _hdr("Cc"),
+                "Bcc":              _hdr("Bcc"),
+                # spam detection / bounce
+                "Reply-To":         _hdr("Reply-To"),
+                "Return-Path":      _hdr("Return-Path"),
+                "X-Mailer":         _hdr("X-Mailer"),
+            }
+
             messages.append({
                 "source_id": message_id,
                 "mailbox": account["name"],
@@ -241,6 +269,7 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
                     "to": to_addrs,
                     "date": date_str,
                     "has_attachments": has_attachments,
+                    "headers": headers,
                 },
             })
         except Exception as e:
