@@ -154,6 +154,76 @@ JSON.stringify(result);
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/omnifocus/task/{task_id}")
+def omnifocus_task_get(task_id: str):
+    """Fetch konkrétní OF task podle ID. Pro threading TG flow (sekce 8 spec):
+    když přijde nový email v threadu s of_task_id → bot zobrazí "Update existující
+    OF task X" + tlačítka [Otevřít OF / Append do notes / Nový task / Skip]."""
+    tid_js = json.dumps(task_id)
+    script = f"""
+const of2 = Application('OmniFocus');
+const doc = of2.defaultDocument;
+let task;
+try {{
+  task = doc.flattenedTasks.whose({{id: {tid_js}}})[0];
+  if (!task) throw new Error('not_found');
+  const props = {{
+    id: task.id(),
+    name: task.name(),
+    note: task.note() || '',
+    completed: task.completed(),
+    flagged: task.flagged(),
+    in_inbox: task.inInbox(),
+    due_at:    task.dueDate()    ? task.dueDate().toISOString()    : null,
+    defer_at:  task.deferDate()  ? task.deferDate().toISOString()  : null,
+    modified_at: task.modificationDate() ? task.modificationDate().toISOString() : null,
+  }};
+  JSON.stringify({{ok: true, task: props}});
+}} catch (e) {{
+  JSON.stringify({{ok: false, error: String(e.message || e), task_id: {tid_js}}});
+}}
+"""
+    try:
+        return run_jxa(script, timeout=15)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/omnifocus/task/{task_id}/append_note")
+def omnifocus_task_append_note(task_id: str, body: dict):
+    """Přidá řádek/blok textu k existující OF task notes.
+
+    Použití: nový email v threadu s of_task_id → Pavel klikne "📎 Append do notes"
+    → bot zavolá tento endpoint s text (subject + sender + krátký excerpt nového
+    emailu), Pavel pak v OF vidí all updates v notes původního tasku.
+
+    Body:
+      text: str         — text k apendování (může obsahovat newlines)
+      separator: str    — co vložit před text (default '\\n\\n────\\n')
+    """
+    tid_js = json.dumps(task_id)
+    text = body.get("text", "") or ""
+    separator = body.get("separator", "\n\n────\n")
+    full_text_js = json.dumps(separator + text)
+    script = f"""
+const of2 = Application('OmniFocus');
+const doc = of2.defaultDocument;
+try {{
+  const task = doc.flattenedTasks.whose({{id: {tid_js}}})[0];
+  if (!task) throw new Error('task not found: ' + {tid_js});
+  const oldNote = task.note() || '';
+  task.note = oldNote + {full_text_js};
+  JSON.stringify({{ok: true, task_id: task.id(), new_length: task.note().length}});
+}} catch (e) {{
+  JSON.stringify({{ok: false, error: String(e.message || e)}});
+}}
+"""
+    try:
+        return run_jxa(script, timeout=15)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/omnifocus/projects")
 def omnifocus_projects():
     """Vrátí seznam projektů s jejich stavy."""
