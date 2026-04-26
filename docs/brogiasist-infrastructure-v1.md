@@ -161,14 +161,14 @@ Beszel agent (Docker, port 45876)
 
 ```env
 APPLE_BRIDGE_URL=http://10.55.2.117:9100      # Apple Studio IP (Linux ↔ macOS přes LAN)
-OLLAMA_URL=http://172.17.0.1:11434             # Ollama běží na VM 103 host, dosažitelný z Dockeru přes docker0 bridge
+OLLAMA_URL=http://ollama:11434                 # Ollama běží jako kontejner v compose (profile=ollama)
 CHROMA_HOST=chromadb
 POSTGRES_HOST=postgres
 POSTGRES_PORT=5432                             # standardní (ne 5433)
 ATTACHMENTS_DIR=/app/attachments               # lokální Linux volume na VM 103, NE bind mount Mac plochy
 ```
 
-> Pozn.: na Linuxu `host.docker.internal` defaultně neexistuje. Použij `172.17.0.1` (IP docker0 bridge) nebo přidej `--add-host=host.docker.internal:host-gateway` do compose.
+> Pozn.: kód v `services/ingest/classify_emails.py` a `chroma_client.py` čte proměnnou `OLLAMA_URL` (NE `OLLAMA_BASE_URL`). Default fallback `http://host.docker.internal:11434` funguje jen na Mac/Windows hostu — na Linux VM se musí explicitně nastavit `OLLAMA_URL`.
 
 ---
 
@@ -178,7 +178,7 @@ ATTACHMENTS_DIR=/app/attachments               # lokální Linux volume na VM 10
 |---|---|---|
 | Docker host | localhost | 10.55.2.231 (LAN) |
 | Apple Bridge | MacBook host (`host.docker.internal:9100`) | Apple Studio (`10.55.2.117:9100`) |
-| Ollama | MacBook host (`host.docker.internal:11434`) | VM 103 host (`172.17.0.1:11434`) |
+| Ollama | MacBook host (`host.docker.internal:11434`) | kontejner v compose (`ollama:11434`, profile=ollama) |
 | PostgreSQL ext. port | **5433** (conflict fix) | **5432** (standard) |
 | Přílohy | bind mount `/Users/pavel/Desktop/OmniFocus` | base64 přes API + lokální `/app/attachments` volume na VM 103 |
 | Apple Bridge location | MacBook (stejný stroj jako Docker) | Apple Studio (jiný stroj v LAN) |
