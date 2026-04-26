@@ -314,7 +314,9 @@ docker exec brogiasist_scheduler ls /app/attachments/   # ← kontejner storage,
 
 **Severita:** HIGH (každý crash = ztráta in-flight requestu na Apple Studio)
 **Zjištěno:** 2026-04-26 (PROD provoz)
-**Status:** FIXED 2026-04-26 (workaround #1)
+**Status:** FIXED 2026-04-26 — proper fix (`os.posix_spawn`), commit `6684cfc` na branch `2`
+
+⚠️ **Workaround #1 (`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`) na macOS 26.4.1 NEFUNGOVAL.** Apple ho v některém release ignoruje. Fix nasazen v 19:33, nový crash o 15 minut později (19:48). Eskalace na proper fix #3.
 
 ### Popis
 Apple Bridge na PajaAppleStudio (10.55.2.117, Python 3.11.15 + uvicorn) náhodně padá s `EXC_BAD_ACCESS (SIGSEGV)` — v jeden den dva crashe (18:17, 19:28). Crash report ukazuje:
@@ -344,26 +346,29 @@ Thread 0 Crashed:
 ### Příčina
 Apple od macOS Catalina nedoporučuje `fork()` v multi-threaded apps. uvicorn má vlákna, `subprocess.Popen` v handlerech volá `fork()`+`exec()`, v child procesu se Apple's `Network.framework` `nw_settings_child_has_forked()` atfork hook pokusí refreshnout `_os_log_preferences` a segfaultuje, protože v child memory není inicializovaný log subsystem.
 
-### Aplikované řešení (workaround #1)
-Do launchd plistu Apple Bridge přidána env proměnná `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`:
+### Aplikovaná řešení
 
-```xml
-<key>EnvironmentVariables</key>
-<dict>
-    <key>OBJC_DISABLE_INITIALIZE_FORK_SAFETY</key>
-    <string>YES</string>
-</dict>
+#### Workaround #1 (NEFUNGOVAL na macOS 26.4.1) — env var `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`
+Nasazeno 19:33, nový crash 19:48 (o 15 min později). Apple v macOS 26.x env var ignoruje. **Odstraněno z plistů během cleanup commitu.**
+
+#### Proper fix (FUNGUJE) — `os.posix_spawn()` místo `subprocess.run()`
+Refactor 2 wrapper funkcí v `services/apple-bridge/main.py`:
+
+```python
+def _spawn_osascript(args: list[str], timeout: int) -> tuple[int, str, str]:
+    # os.posix_spawn() s file_actions (POSIX_SPAWN_DUP2 + POSIX_SPAWN_CLOSE pro pipes)
+    # → atomický syscall, neforkuje, atfork hooks Apple's Network.framework se nevolají
 ```
 
-Aplikováno na:
-- `~/Library/LaunchAgents/cz.brogiasist.apple-bridge.plist` na Apple Studio (in-place edit + `launchctl unload/load`)
-- `services/apple-bridge/cz.brogiasist.apple-bridge.plist` template v gitu (pro budoucí deployy)
+`run_applescript` a `run_jxa` volají tento helper, API zůstává — 12 callsites se nemění.
 
-### Známé limitace fixu
-- Apple-deprecated workaround — může v budoucích macOS přestat fungovat (macOS 27+?)
-- **Pokud crashe pokračují**, eskalace na proper fix #3:
-  - `os.posix_spawn()` místo `subprocess.Popen` (1–2 h refactor)
-  - + `multiprocessing.set_start_method('spawn')` na startu
+**Verifikace:**
+- Lokální stress test (MacBook, M1 Ultra: nope → MacBook Pro): 50 requestů `/omnifocus/tasks`, 5 paralelních osascript subprocesů, 21 minut zátěže → **0 nových crash reportů**
+- Deploy na Apple Studio: commit `6684cfc` (branch `2`), `scp main.py` + `launchctl unload/load`
+- `/health` OK po reload
+
+### Co dál sledovat
+24h po deployi: `ssh dxpavel@10.55.2.117 "ls ~/Library/Logs/DiagnosticReports/Python-*.ips"` — pokud baseline 8 nepřibude, fix drží.
 
 ### Jak ověřit po opravě
 ```bash
