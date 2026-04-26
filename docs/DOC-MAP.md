@@ -1,7 +1,7 @@
 ---
 Název: DOC-MAP
 Soubor: docs/DOC-MAP.md
-Verze: 4.4 (release 1.1)
+Verze: 4.5 (release 1.1)
 Poslední aktualizace: 2026-04-26
 Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, neexistuje.
 ---
@@ -29,6 +29,7 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 |---|---|---|
 | `brogiasist-api-reference-v1.md` | Webhook server endpointy, příklady | ✅ 2026-04-06 |
 | `brogiasist-credentials-v1.md` | Přístupy, API klíče, hesla (nečíst zbytečně) | ✅ 2026-04-22 |
+| `brogiasist-semantics-v1.md` | Email TYP/STATUS/ACTION semantika, decision flow, grafická spec, Mermaid diagram | ✅ 2026-04-26 v1.1 |
 | `brogiasist-workflows-v1.md` | Automatizace, rutiny | ⏳ neaktuální |
 | `brogiasist-feature-plan-v1.md` | Původní plán 9 modulů | ⏳ archiv (historický) |
 
