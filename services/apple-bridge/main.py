@@ -583,107 +583,149 @@ JSON.stringify(result);
 
 @app.get("/contacts/all")
 def contacts_all():
-    """Vrátí kontakty + jejich skupiny přímo ze sqlite databáze Contacts (rychlé).
+    """Agreguje kontakty + jejich skupiny ze VŠECH AddressBook DB (CardDAV účty).
 
-    Vyžaduje Full Disk Access pro Python interpreter — bez něj sqlite3.connect
-    selže s PermissionError. V tom případě vrací 200 s ok=false a error='no_fda',
-    aby scheduler nezasekl celý ingest pipeline (lepší než HTTP 500).
+    macOS ukládá kontakty per-account v ~/Library/Application Support/AddressBook/:
+    - top-level AddressBook-v22.abcddb (lokální)
+    - Sources/<UUID>/AddressBook-v22.abcddb (iCloud, Google, Exchange, ...)
+
+    Tato funkce projde všechny *.abcddb soubory, agreguje kontakty (dedup po
+    ZUNIQUEID), emaily, telefony a skupiny. Prázdné DB tiché skipuje.
+
+    Vyžaduje Full Disk Access pro Python interpreter — bez něj sqlite3 padne
+    s PermissionError nebo OperationalError. V tom případě vrací 200 s ok=false
+    a error='no_fda' (graceful degrade pro scheduler).
     """
-    # Preferuj source databázi (iCloud sync), fallback na hlavní
-    src_base = os.path.expanduser("~/Library/Application Support/AddressBook/Sources")
-    db_path = None
+    base = os.path.expanduser("~/Library/Application Support/AddressBook")
+    db_paths: list[str] = []
     try:
-        if os.path.exists(src_base):
-            for d in os.listdir(src_base):
-                candidate = os.path.join(src_base, d, "AddressBook-v22.abcddb")
+        # Top-level DB
+        top = os.path.join(base, "AddressBook-v22.abcddb")
+        if os.path.exists(top):
+            db_paths.append(top)
+        # Per-account DB v Sources/<UUID>/
+        sources = os.path.join(base, "Sources")
+        if os.path.exists(sources):
+            for d in os.listdir(sources):
+                candidate = os.path.join(sources, d, "AddressBook-v22.abcddb")
                 if os.path.exists(candidate):
-                    db_path = candidate
-                    break
+                    db_paths.append(candidate)
     except PermissionError:
         return JSONResponse({
             "ok": False, "error": "no_fda",
             "message": "Bridge nemá Full Disk Access — System Settings → Privacy & Security → Full Disk Access → přidat Python.app a restart Bridge.",
-            "count": 0, "contacts": [],
+            "count": 0, "contacts": [], "db_count": 0,
         })
-    if not db_path:
-        db_path = os.path.expanduser(
-            "~/Library/Application Support/AddressBook/AddressBook-v22.abcddb"
-        )
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        cur = conn.cursor()
-        # Osoby (klíčování přes Z_PK protože Z_22PARENTGROUPS používá numerický PK)
-        cur.execute("""
-            SELECT r.Z_PK, r.ZUNIQUEID, r.ZFIRSTNAME, r.ZLASTNAME, r.ZORGANIZATION, r.ZMODIFICATIONDATE
-            FROM ZABCDRECORD r
-            WHERE r.ZUNIQUEID LIKE '%:ABPerson'
-        """)
-        people = {}
-        pk_to_uid = {}
-        for pk, uid, first, last, org, modified in cur.fetchall():
-            people[uid] = {"id": uid, "first": first, "last": last,
-                           "org": org, "modified_at": modified,
-                           "emails": [], "phones": [], "groups": []}
-            pk_to_uid[pk] = uid
-        # Emaily
-        cur.execute("""
-            SELECT r.ZUNIQUEID, e.ZLABEL, e.ZADDRESS
-            FROM ZABCDEMAILADDRESS e
-            JOIN ZABCDRECORD r ON e.ZOWNER = r.Z_PK
-            WHERE r.ZUNIQUEID LIKE '%:ABPerson'
-        """)
-        for uid, label, addr in cur.fetchall():
-            if uid in people and addr:
-                people[uid]["emails"].append({"label": label or "", "value": addr})
+
+    if not db_paths:
+        return JSONResponse({
+            "ok": False, "error": "no_db",
+            "message": f"Žádná AddressBook DB v {base}",
+            "count": 0, "contacts": [], "db_count": 0,
+        })
+
+    people: dict[str, dict] = {}
+    db_stats: list[dict] = []
+
+    for db_path in db_paths:
+        local_pk_to_uid: dict[int, str] = {}  # per-DB mapping pro skupiny
+        added = 0
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            cur = conn.cursor()
+        except (sqlite3.OperationalError, PermissionError):
+            db_stats.append({"path": db_path, "error": "open_failed"})
+            continue
+
+        # Osoby
+        try:
+            cur.execute("""
+                SELECT r.Z_PK, r.ZUNIQUEID, r.ZFIRSTNAME, r.ZLASTNAME,
+                       r.ZORGANIZATION, r.ZMODIFICATIONDATE
+                FROM ZABCDRECORD r
+                WHERE r.ZUNIQUEID LIKE '%:ABPerson'
+            """)
+            for pk, uid, first, last, org, modified in cur.fetchall():
+                local_pk_to_uid[pk] = uid
+                if uid not in people:
+                    people[uid] = {"id": uid, "first": first, "last": last,
+                                   "org": org, "modified_at": modified,
+                                   "emails": [], "phones": [], "groups": []}
+                    added += 1
+        except sqlite3.OperationalError:
+            conn.close()
+            db_stats.append({"path": db_path, "error": "no_ZABCDRECORD"})
+            continue
+
+        # Emaily (s deduplikací napříč DB)
+        try:
+            cur.execute("""
+                SELECT r.ZUNIQUEID, e.ZLABEL, e.ZADDRESS
+                FROM ZABCDEMAILADDRESS e
+                JOIN ZABCDRECORD r ON e.ZOWNER = r.Z_PK
+                WHERE r.ZUNIQUEID LIKE '%:ABPerson'
+            """)
+            for uid, label, addr in cur.fetchall():
+                if uid in people and addr:
+                    if not any(e["value"] == addr for e in people[uid]["emails"]):
+                        people[uid]["emails"].append({"label": label or "", "value": addr})
+        except sqlite3.OperationalError:
+            pass
+
         # Telefony
-        cur.execute("""
-            SELECT r.ZUNIQUEID, p.ZLABEL, p.ZFULLNUMBER
-            FROM ZABCDPHONENUMBER p
-            JOIN ZABCDRECORD r ON p.ZOWNER = r.Z_PK
-            WHERE r.ZUNIQUEID LIKE '%:ABPerson'
-        """)
-        for uid, label, num in cur.fetchall():
-            if uid in people and num:
-                people[uid]["phones"].append({"label": label or "", "value": num})
-        # Skupiny (mapping přes Z_22PARENTGROUPS many-to-many)
-        # Z_22CONTACTS = Z_PK kontaktu, Z_19PARENTGROUPS1 = Z_PK skupiny
-        cur.execute("""
-            SELECT m.Z_22CONTACTS, g.ZNAME
-            FROM Z_22PARENTGROUPS m
-            JOIN ZABCDRECORD g ON g.Z_PK = m.Z_19PARENTGROUPS1
-            WHERE g.ZUNIQUEID LIKE '%:ABGroup' AND g.ZNAME IS NOT NULL
-        """)
-        for contact_pk, group_name in cur.fetchall():
-            uid = pk_to_uid.get(contact_pk)
-            if uid and uid in people:
-                people[uid]["groups"].append(group_name)
+        try:
+            cur.execute("""
+                SELECT r.ZUNIQUEID, p.ZLABEL, p.ZFULLNUMBER
+                FROM ZABCDPHONENUMBER p
+                JOIN ZABCDRECORD r ON p.ZOWNER = r.Z_PK
+                WHERE r.ZUNIQUEID LIKE '%:ABPerson'
+            """)
+            for uid, label, num in cur.fetchall():
+                if uid in people and num:
+                    if not any(p["value"] == num for p in people[uid]["phones"]):
+                        people[uid]["phones"].append({"label": label or "", "value": num})
+        except sqlite3.OperationalError:
+            pass
+
+        # Skupiny — mapping Z_22PARENTGROUPS je per-DB (PK jsou interní)
+        try:
+            cur.execute("""
+                SELECT m.Z_22CONTACTS, g.ZNAME
+                FROM Z_22PARENTGROUPS m
+                JOIN ZABCDRECORD g ON g.Z_PK = m.Z_19PARENTGROUPS1
+                WHERE g.ZUNIQUEID LIKE '%:ABGroup' AND g.ZNAME IS NOT NULL
+            """)
+            for contact_pk, group_name in cur.fetchall():
+                uid = local_pk_to_uid.get(contact_pk)
+                if uid and uid in people:
+                    if group_name not in people[uid]["groups"]:
+                        people[uid]["groups"].append(group_name)
+        except sqlite3.OperationalError:
+            # Z_22PARENTGROUPS nemusí v každé DB existovat
+            pass
+
         conn.close()
-        # Převod Mac Core Data timestamp (sekund od 2001-01-01) na ISO
-        epoch = datetime(2001, 1, 1, tzinfo=timezone.utc)
-        result = []
-        for p in people.values():
-            mod = None
-            if p["modified_at"]:
-                try:
-                    mod = (epoch + timedelta(seconds=p["modified_at"])).isoformat()
-                except Exception:
-                    pass
-            result.append({**p, "modified_at": mod})
-        return {"ok": True, "count": len(result), "contacts": result}
-    except sqlite3.OperationalError as e:
-        # "unable to open database file" obvykle znamená no FDA
-        return JSONResponse({
-            "ok": False, "error": "no_fda",
-            "message": f"Sqlite nemůže otevřít DB (pravděpodobně chybí Full Disk Access): {e}",
-            "count": 0, "contacts": [],
-        })
-    except PermissionError as e:
-        return JSONResponse({
-            "ok": False, "error": "no_fda",
-            "message": str(e), "count": 0, "contacts": [],
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        db_stats.append({"path": db_path, "added": added})
+
+    # Convert Mac Core Data timestamp na ISO
+    epoch = datetime(2001, 1, 1, tzinfo=timezone.utc)
+    result = []
+    for p in people.values():
+        mod = None
+        if p["modified_at"]:
+            try:
+                mod = (epoch + timedelta(seconds=p["modified_at"])).isoformat()
+            except Exception:
+                pass
+        result.append({**p, "modified_at": mod})
+
+    return {
+        "ok": True,
+        "count": len(result),
+        "contacts": result,
+        "db_count": len(db_paths),
+        "db_stats": db_stats,
+    }
 
 
 def _dt_to_iso(dt) -> str | None:
