@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 import httpx
 import logging
 from db import get_conn
@@ -81,24 +82,65 @@ def ingest_reminders():
 
 
 def ingest_contacts():
-    data = _bridge_get("/contacts/all", timeout=60)
+    """Ingest Apple Contacts s hash-check optimalizací.
+
+    JXA cesta vrací prázdné emails/phones (viz Bridge endpoint), takže
+    UPDATE musí ZACHOVAT existující emails/phones — jinak by jeden běh
+    smazal všechna historická data. Aktualizujeme reálně jen
+    name/org/groups/modified_at.
+
+    Hash check: spočítá sha256 z odpovědi. Pokud == minulý hash uložený
+    v config tabulce → skip ingest (žádné DB writes). Tím interval 12h
+    znamená nuluvý DB load pokud Pavel nezměnil kontakty.
+    """
+    data = _bridge_get("/contacts/all", timeout=300)
     if not data or not data.get("ok"):
+        logger.warning(f"Contacts fetch nepovedlo se: ok={data and data.get('ok')} err={data and data.get('error')}")
         return
     items = data.get("contacts", [])
+    if not items:
+        logger.info("Contacts: prázdná odpověď, skip")
+        return
+
+    # Hash z aktuální response (sort_keys pro deterministic hash)
+    payload = json.dumps(items, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    h = hashlib.sha256(payload).hexdigest()
+
     conn = get_conn()
     cur = conn.cursor()
+
+    # Last hash z config — pokud stejný, nic se nezměnilo
+    cur.execute("SELECT value FROM config WHERE key = 'apple_contacts_last_hash'")
+    row = cur.fetchone()
+    last_hash = row[0] if row else None
+    if last_hash == h:
+        logger.info(f"Contacts: žádné změny od posledního ingestu (hash {h[:12]}…) — skip")
+        cur.close()
+        conn.close()
+        return
+
     upserted = 0
     for c in items:
         try:
+            # CASE WHEN zajistí, že prázdné emails/phones (JXA vrací []) nepřepíší
+            # existující data v DB. Refresh emails/phones řešen separátně přes
+            # legacy /contacts/all_sqlite (až bude FDA fungovat).
             cur.execute("""
                 INSERT INTO apple_contacts
                     (source_id, first_name, last_name, organization, emails, phones, groups, modified_at)
                 VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s)
                 ON CONFLICT (source_id) DO UPDATE SET
-                    first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
-                    organization=EXCLUDED.organization, emails=EXCLUDED.emails,
-                    phones=EXCLUDED.phones, groups=EXCLUDED.groups,
-                    modified_at=EXCLUDED.modified_at,
+                    first_name=EXCLUDED.first_name,
+                    last_name=EXCLUDED.last_name,
+                    organization=EXCLUDED.organization,
+                    emails=CASE WHEN jsonb_array_length(EXCLUDED.emails) > 0
+                                THEN EXCLUDED.emails
+                                ELSE apple_contacts.emails END,
+                    phones=CASE WHEN jsonb_array_length(EXCLUDED.phones) > 0
+                                THEN EXCLUDED.phones
+                                ELSE apple_contacts.phones END,
+                    groups=EXCLUDED.groups,
+                    modified_at=COALESCE(EXCLUDED.modified_at, apple_contacts.modified_at),
                     ingested_at=NOW()
             """, (c["id"], c.get("first"), c.get("last"), c.get("org"),
                   json.dumps(c.get("emails", [])), json.dumps(c.get("phones", [])),
@@ -108,10 +150,17 @@ def ingest_contacts():
         except Exception as e:
             logger.warning(f"Contacts upsert {c.get('id')}: {e}")
             conn.rollback()
+
+    # Uložit nový hash
+    cur.execute("""
+        INSERT INTO config (key, value, module) VALUES ('apple_contacts_last_hash', %s, 'apple_apps')
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()
+    """, (h,))
+
     conn.commit()
     cur.close()
     conn.close()
-    logger.info(f"Contacts: upserted {upserted}/{len(items)}")
+    logger.info(f"Contacts: upserted {upserted}/{len(items)} (změny detekovány, nový hash {h[:12]}…)")
 
 
 def ingest_calendar():
