@@ -583,16 +583,28 @@ JSON.stringify(result);
 
 @app.get("/contacts/all")
 def contacts_all():
-    """Vrátí kontakty přímo ze sqlite databáze Contacts (rychlé)."""
+    """Vrátí kontakty + jejich skupiny přímo ze sqlite databáze Contacts (rychlé).
+
+    Vyžaduje Full Disk Access pro Python interpreter — bez něj sqlite3.connect
+    selže s PermissionError. V tom případě vrací 200 s ok=false a error='no_fda',
+    aby scheduler nezasekl celý ingest pipeline (lepší než HTTP 500).
+    """
     # Preferuj source databázi (iCloud sync), fallback na hlavní
     src_base = os.path.expanduser("~/Library/Application Support/AddressBook/Sources")
     db_path = None
-    if os.path.exists(src_base):
-        for d in os.listdir(src_base):
-            candidate = os.path.join(src_base, d, "AddressBook-v22.abcddb")
-            if os.path.exists(candidate):
-                db_path = candidate
-                break
+    try:
+        if os.path.exists(src_base):
+            for d in os.listdir(src_base):
+                candidate = os.path.join(src_base, d, "AddressBook-v22.abcddb")
+                if os.path.exists(candidate):
+                    db_path = candidate
+                    break
+    except PermissionError:
+        return JSONResponse({
+            "ok": False, "error": "no_fda",
+            "message": "Bridge nemá Full Disk Access — System Settings → Privacy & Security → Full Disk Access → přidat Python.app a restart Bridge.",
+            "count": 0, "contacts": [],
+        })
     if not db_path:
         db_path = os.path.expanduser(
             "~/Library/Application Support/AddressBook/AddressBook-v22.abcddb"
@@ -600,16 +612,19 @@ def contacts_all():
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         cur = conn.cursor()
-        # Základní info o osobách
+        # Osoby (klíčování přes Z_PK protože Z_22PARENTGROUPS používá numerický PK)
         cur.execute("""
-            SELECT r.ZUNIQUEID, r.ZFIRSTNAME, r.ZLASTNAME, r.ZORGANIZATION, r.ZMODIFICATIONDATE
+            SELECT r.Z_PK, r.ZUNIQUEID, r.ZFIRSTNAME, r.ZLASTNAME, r.ZORGANIZATION, r.ZMODIFICATIONDATE
             FROM ZABCDRECORD r
             WHERE r.ZUNIQUEID LIKE '%:ABPerson'
         """)
-        people = {row[0]: {"id": row[0], "first": row[1], "last": row[2],
-                            "org": row[3], "modified_at": row[4],
-                            "emails": [], "phones": []}
-                  for row in cur.fetchall()}
+        people = {}
+        pk_to_uid = {}
+        for pk, uid, first, last, org, modified in cur.fetchall():
+            people[uid] = {"id": uid, "first": first, "last": last,
+                           "org": org, "modified_at": modified,
+                           "emails": [], "phones": [], "groups": []}
+            pk_to_uid[pk] = uid
         # Emaily
         cur.execute("""
             SELECT r.ZUNIQUEID, e.ZLABEL, e.ZADDRESS
@@ -630,6 +645,18 @@ def contacts_all():
         for uid, label, num in cur.fetchall():
             if uid in people and num:
                 people[uid]["phones"].append({"label": label or "", "value": num})
+        # Skupiny (mapping přes Z_22PARENTGROUPS many-to-many)
+        # Z_22CONTACTS = Z_PK kontaktu, Z_19PARENTGROUPS1 = Z_PK skupiny
+        cur.execute("""
+            SELECT m.Z_22CONTACTS, g.ZNAME
+            FROM Z_22PARENTGROUPS m
+            JOIN ZABCDRECORD g ON g.Z_PK = m.Z_19PARENTGROUPS1
+            WHERE g.ZUNIQUEID LIKE '%:ABGroup' AND g.ZNAME IS NOT NULL
+        """)
+        for contact_pk, group_name in cur.fetchall():
+            uid = pk_to_uid.get(contact_pk)
+            if uid and uid in people:
+                people[uid]["groups"].append(group_name)
         conn.close()
         # Převod Mac Core Data timestamp (sekund od 2001-01-01) na ISO
         epoch = datetime(2001, 1, 1, tzinfo=timezone.utc)
@@ -643,6 +670,18 @@ def contacts_all():
                     pass
             result.append({**p, "modified_at": mod})
         return {"ok": True, "count": len(result), "contacts": result}
+    except sqlite3.OperationalError as e:
+        # "unable to open database file" obvykle znamená no FDA
+        return JSONResponse({
+            "ok": False, "error": "no_fda",
+            "message": f"Sqlite nemůže otevřít DB (pravděpodobně chybí Full Disk Access): {e}",
+            "count": 0, "contacts": [],
+        })
+    except PermissionError as e:
+        return JSONResponse({
+            "ok": False, "error": "no_fda",
+            "message": str(e), "count": 0, "contacts": [],
+        })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

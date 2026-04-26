@@ -92,15 +92,17 @@ def ingest_contacts():
         try:
             cur.execute("""
                 INSERT INTO apple_contacts
-                    (source_id, first_name, last_name, organization, emails, phones, modified_at)
-                VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+                    (source_id, first_name, last_name, organization, emails, phones, groups, modified_at)
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s)
                 ON CONFLICT (source_id) DO UPDATE SET
                     first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
                     organization=EXCLUDED.organization, emails=EXCLUDED.emails,
-                    phones=EXCLUDED.phones, modified_at=EXCLUDED.modified_at,
+                    phones=EXCLUDED.phones, groups=EXCLUDED.groups,
+                    modified_at=EXCLUDED.modified_at,
                     ingested_at=NOW()
             """, (c["id"], c.get("first"), c.get("last"), c.get("org"),
                   json.dumps(c.get("emails", [])), json.dumps(c.get("phones", [])),
+                  json.dumps(c.get("groups", [])),
                   c.get("modified_at")))
             upserted += 1
         except Exception as e:
