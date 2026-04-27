@@ -415,10 +415,18 @@ Pavel klikne ACTION → bot uloží do Chroma `email_actions`:
 - Pairwise cosine, prah < 0.05 = duplicate
 - Ponechat record s nejnovějším `created_at`, ostatní smazat
 
-### Auto-aplikace (`find_repeat_action`)
+### Návrh akce z Chromy (`find_repeat_action_with_score`)
 
-- Před AI klasifikací: search v Chromě
-- Pokud `cosine < 0.15` → auto-aplikuj zapamatovanou akci
+- V `notify_classified_emails`: pro každý nový email cosine search v Chromě
+- Pokud `cosine ≤ AUTO_THRESHOLD_DIST` (~0.15) a `≥ AUTO_THRESHOLD_COUNT` sousedů
+  mělo stejnou akci → vrátí `(action, match_count, total_close)`
+- **2026-04-27: silent auto-apply VYPNUTÝ.** Místo automatické exekuce zobrazí
+  TG zpráva navíc 1. řádek `⭐ Navrženo: 2X (NN%) ⭐` (NN = `match/total*100`)
+  a v 3×3 layoutu predikované tlačítko obalí hvězdičkami `⭐ 2X ⭐`. Pavel
+  potvrdí kliknutím (na velký řádek nahoře nebo zvýrazněné tlačítko v mřížce
+  — oba mají stejný `callback_data`).
+- Důvod změny: incident s `krouzecka@volny.cz` 2026-04-27 — silent auto-apply
+  by mohl smazat legitimní mail bez možnosti zásahu Pavlem.
 - Cosine < 0.05 = velmi podobné, < 0.15 = podobné (současná hodnota)
 
 ---

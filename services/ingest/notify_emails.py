@@ -6,7 +6,7 @@ import logging
 from html import escape
 from db import get_conn
 from telegram_notify import send
-from chroma_client import find_repeat_action
+from chroma_client import find_repeat_action_with_score
 
 log = logging.getLogger(__name__)
 
@@ -35,39 +35,74 @@ def _btn(label: str, action: str, eid: str) -> dict:
     return {"text": label, "callback_data": f"email:{action}:{eid}"}
 
 
-def _buttons_for_typ(typ: str, email_id: str, has_unsubscribe: bool = False) -> list:
+# Mapování action → "2X" label (pro Chroma predikci v extra řádku).
+_ACTION_2X = {
+    "of": "2of", "rem": "2rem", "cal": "2cal", "note": "2note",
+    "hotovo": "2hotovo", "del": "2del", "spam": "2spam",
+    "unsub": "2unsub", "skip": "2skip", "precteno": "Otevřu sám",
+}
+
+
+def _buttons_for_typ(
+    typ: str, email_id: str,
+    has_unsubscribe: bool = False,
+    suggested: dict | None = None,
+) -> list:
     """Univerzální 3×3 layout pro všechny TYPy (Pavlovo rozhodnutí 2026-04-27).
 
     Callback_data zůstává `email:<action>:<id>` (backward compat).
     `2unsub` se ukáže jen když email má `List-Unsubscribe` header.
     `ENCRYPTED` má navíc extra řádek `👁 Otevřu sám` (action=precteno).
+
+    `suggested = {"action": "of", "confidence_pct": 88}` (z Chroma
+    `find_repeat_action_with_score`) → přidá extra řádek nahoře
+    `⭐ Navrženo: 2of (88%) ⭐` (1 velké tlačítko, callback stejný jako
+    odpovídající akce v 3×3) a v 3×3 přepíše label tlačítka na `⭐ 2X ⭐`.
     """
     eid = email_id
+    sug_action = (suggested or {}).get("action")
 
-    row2 = [_btn("📅 2cal", "cal", eid),
-            _btn("📝 2note", "note", eid)]
+    def lbl(default: str, action: str) -> str:
+        """Pokud akce odpovídá predikci, obalí label hvězdičkami místo původní ikony."""
+        if action == sug_action:
+            return f"⭐ {_ACTION_2X.get(action, action)} ⭐"
+        return default
+
+    row2 = [_btn(lbl("📅 2cal", "cal"),    "cal",  eid),
+            _btn(lbl("📝 2note", "note"), "note", eid)]
     if has_unsubscribe:
-        row2.append(_btn("🚫 2unsub", "unsub", eid))
+        row2.append(_btn(lbl("🚫 2unsub", "unsub"), "unsub", eid))
 
     universal = [
-        [_btn("✅ 2hotovo", "hotovo", eid),
-         _btn("📥 2of",     "of",     eid),
-         _btn("⏰ 2rem",    "rem",    eid)],
+        [_btn(lbl("✅ 2hotovo", "hotovo"), "hotovo", eid),
+         _btn(lbl("📥 2of",     "of"),     "of",     eid),
+         _btn(lbl("⏰ 2rem",    "rem"),    "rem",    eid)],
         row2,
-        [_btn("⏭ 2skip",   "skip",   eid),
-         _btn("🗑 2del",    "del",    eid),
-         _btn("🚫 2spam",   "spam",   eid)],
+        [_btn(lbl("⏭ 2skip",   "skip"),   "skip",   eid),
+         _btn(lbl("🗑 2del",    "del"),    "del",    eid),
+         _btn(lbl("🚫 2spam",   "spam"),   "spam",   eid)],
     ]
 
     if typ == "ENCRYPTED":
-        return [[_btn("👁 Otevřu sám", "precteno", eid)]] + universal
+        universal = [[_btn(lbl("👁 Otevřu sám", "precteno"), "precteno", eid)]] + universal
+
+    # Extra řádek s návrhem (jen pokud predikce existuje a action je v universalu).
+    if suggested and sug_action and sug_action in _ACTION_2X:
+        pct = suggested.get("confidence_pct")
+        pct_str = f" ({pct}%)" if pct is not None else ""
+        suggest_row = [[_btn(
+            f"⭐ Navrženo: {_ACTION_2X[sug_action]}{pct_str} ⭐",
+            sug_action, eid,
+        )]]
+        return suggest_row + universal
 
     return universal
 
 
-def _render_buttons(typ: str, email_id: str, has_unsubscribe: bool = False) -> list:
+def _render_buttons(typ: str, email_id: str, has_unsubscribe: bool = False,
+                    suggested: dict | None = None) -> list:
     """Backward-compat alias pro starší volání."""
-    return _buttons_for_typ(typ, email_id, has_unsubscribe)
+    return _buttons_for_typ(typ, email_id, has_unsubscribe, suggested)
 
 
 def notify_classified_emails():
@@ -94,24 +129,17 @@ def notify_classified_emails():
         mb = mailbox.split("@")[0] if mailbox else "?"
 
         # Zkontroluj ChromaDB — opakující se vzor?
-        repeat_action = find_repeat_action(from_addr or "", subject or "", body or "")
-        if repeat_action:
-            # Auto-apply bez TG dotazu
-            from telegram_callback import _email_action
-            _email_action(str(email_id), repeat_action)
-            action_label = {
-                "of": "OF", "rem": "Reminder", "note": "Note",
-                "hotovo": "Hotovo", "spam": "Spam", "del": "Smazáno",
-                "precteno": "Přečteno",
-            }.get(repeat_action, repeat_action)
-            send(
-                f"🔁 <b>Opakuji akci: {action_label}</b>\n"
-                f"Od: <code>{short_from}</code>\n"
-                f"Předmět: {subject or '(bez předmětu)'}"
-            )
-            cur.execute("UPDATE email_messages SET tg_notified_at=NOW() WHERE id=%s", (email_id,))
-            log.info(f"chroma auto-apply: {repeat_action} email_id={email_id}")
-            continue
+        # 2026-04-27: silent auto-apply VYPNUTÝ. Místo automatické akce
+        # zobrazíme zvýrazněné tlačítko `⭐ Navrženo: 2X (NN%) ⭐` v TG zprávě
+        # a Pavel potvrdí kliknutím. Důvod: dnešní incident s krouzecka@volny.cz
+        # — auto-apply by mohl smazat legitimní email bez možnosti zásahu.
+        suggested = None
+        chroma_match = find_repeat_action_with_score(from_addr or "", subject or "", body or "")
+        if chroma_match:
+            sug_action, match_count, total = chroma_match
+            pct = round(100 * match_count / max(total, 1))
+            suggested = {"action": sug_action, "confidence_pct": pct}
+            log.info(f"chroma suggest: action={sug_action} {match_count}/{total} ({pct}%) email_id={email_id}")
 
         text = (
             f"{icon} <b>{escape(typ)}</b>  <code>{escape(mb)}</code>  <i>{conf_str}</i>\n"
@@ -120,8 +148,12 @@ def notify_classified_emails():
         )
         if firma:
             text += f"\nFirma: <b>{escape(firma)}</b>"
+        if suggested:
+            text += f"\n<i>🔁 Z minulosti: tento vzor → {_ACTION_2X.get(suggested['action'], suggested['action'])} ({suggested['confidence_pct']}%)</i>"
 
-        buttons = _render_buttons(typ, str(email_id), has_unsubscribe=bool(list_unsub))
+        buttons = _render_buttons(typ, str(email_id),
+                                  has_unsubscribe=bool(list_unsub),
+                                  suggested=suggested)
         result = send(text, buttons)
 
         if result:

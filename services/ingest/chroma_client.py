@@ -127,9 +127,21 @@ def store_email_action(
 
 
 def find_repeat_action(from_addr: str, subject: str, body: str, n_results: int = 10) -> str | None:
+    """Backward-compat wrapper — vrací jen action (None pokud nematch)."""
+    res = find_repeat_action_with_score(from_addr, subject, body, n_results)
+    return res[0] if res else None
+
+
+def find_repeat_action_with_score(
+    from_addr: str, subject: str, body: str, n_results: int = 10
+) -> tuple[str, int, int] | None:
     """
     Hledá podobné emaily v ChromaDB.
-    Vrátí akci pokud >= AUTO_THRESHOLD_COUNT podobných emailů mělo stejnou akci.
+    Vrátí (action, match_count, total_neighbors) pokud >= AUTO_THRESHOLD_COUNT
+    podobných emailů (cosine ≤ AUTO_THRESHOLD_DIST) mělo stejnou akci, jinak None.
+
+    `match_count` = kolik z `total_neighbors` mělo zvolenou action — slouží
+    pro výpočet „confidence" (match_count / total_neighbors).
     """
     try:
         col_id = _get_or_create_collection("email_actions")
@@ -145,16 +157,18 @@ def find_repeat_action(from_addr: str, subject: str, body: str, n_results: int =
             return None
 
         action_counts: dict[str, int] = {}
+        total_close = 0
         for meta, dist in zip(results["metadatas"][0], results["distances"][0]):
             if dist <= AUTO_THRESHOLD_DIST:
+                total_close += 1
                 a = meta.get("action", "")
                 if a:
                     action_counts[a] = action_counts.get(a, 0) + 1
 
         for action, cnt in action_counts.items():
             if cnt >= AUTO_THRESHOLD_COUNT:
-                log.info(f"chroma pattern: action={action} count={cnt}")
-                return action
+                log.info(f"chroma pattern: action={action} count={cnt}/{total_close}")
+                return (action, cnt, total_close)
 
     except Exception as e:
         log.error(f"chroma find_repeat_action: {e}")
