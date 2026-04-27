@@ -283,19 +283,29 @@ CREATE INDEX idx_pending_status ON pending_actions(status, created_at);
 
 | TYP | Tlačítka v TG zprávě |
 |---|---|
-| `ÚKOL` | `✅ 2hotovo` · `📥 2of` · `⏰ 2rem` · `📝 2note` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
-| `DOKLAD` | `📥 2of` (zaplatit) · `📝 2note` · `✅ 2hotovo` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
-| `NABÍDKA` | `📝 2note` · `🚫 2unsub` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
-| `NOTIFIKACE` | `✅ 2hotovo` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
-| `POZVÁNKA` | `📅 2cal + Accept reply` · `📅 2cal jen` · `❌ Decline reply` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
-| `INFO` | `✅ 2hotovo` · `⏭ 2skip` · `🚫 2unsub` (jen pokud má List-Unsubscribe) · `🗑 2del` · `🚫 2spam` |
-| `ERROR` | `✅ 2hotovo` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
-| `LIST` | (žádná TG zpráva, auto-2hotovo) |
-| `ENCRYPTED` | `👁 Otevřu sám` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
+**Univerzální 3×3 layout pro všechny TYPy** (Pavlovo rozhodnutí 2026-04-27 — předchozí per-TYP redukce vedla k frustraci, kdy chybělo žádané tlačítko):
+
+```
+Řada 1:  ✅ 2hotovo  📥 2of      ⏰ 2rem
+Řada 2:  📅 2cal     📝 2note    🚫 2unsub*
+Řada 3:  ⏭ 2skip    🗑 2del     🚫 2spam
+```
+
+\* `🚫 2unsub` se zobrazí **jen když email má `List-Unsubscribe` header** (jinak řada 2 obsahuje pouze 2 tlačítka).
+
+| TYP | Tlačítka |
+|---|---|
+| `ÚKOL`, `DOKLAD`, `NABÍDKA`, `NOTIFIKACE`, `POZVÁNKA`, `INFO`, `ERROR` | univerzální 3×3 layout |
+| `ENCRYPTED` | extra řádek `👁 Otevřu sám` **+** univerzální 3×3 |
+| `LIST` | (žádná TG zpráva — auto-2hotovo) |
 
 > `2del` = univerzální „rychle smazat" tlačítko (duplicity, šum). Pošta jde do `Trash`,
 > akce se učí v Chromě (příště podobný vzor → návrh 2del), ale sender se **NE**označuje
 > jako spam — žádné auto-spam pro další maily od něj. Pro to slouží `2spam`.
+
+> **Historická poznámka:** Do 2026-04-27 měl každý TYP svou redukovanou sadu tlačítek
+> (např. NABÍDKA jen 2note/2unsub/2skip/2del/2spam). Pavel: „raději ať se ukazují všechna
+> tlačítka, abych nemusel přepínat z TG do dashboardu pro chybějící akci". Proto sjednoceno.
 
 ### Threading TG flow
 

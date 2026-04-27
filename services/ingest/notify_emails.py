@@ -36,91 +36,33 @@ def _btn(label: str, action: str, eid: str) -> dict:
 
 
 def _buttons_for_typ(typ: str, email_id: str, has_unsubscribe: bool = False) -> list:
-    """Vrátí inline_keyboard rows pro daný TYP (per spec sekce 7).
+    """Univerzální 3×3 layout pro všechny TYPy (Pavlovo rozhodnutí 2026-04-27).
 
-    Callback_data formát zůstává krátký (email:<action>:<id>) — UI text
-    používá '2of' notaci (per spec semantika prefix '2' = 'to').
+    Callback_data zůstává `email:<action>:<id>` (backward compat).
+    `2unsub` se ukáže jen když email má `List-Unsubscribe` header.
+    `ENCRYPTED` má navíc extra řádek `👁 Otevřu sám` (action=precteno).
     """
     eid = email_id
 
-    if typ == "ÚKOL":
-        return [
-            [_btn("✅ 2hotovo", "hotovo", eid),
-             _btn("📥 2of",     "of",     eid),
-             _btn("⏰ 2rem",    "rem",    eid)],
-            [_btn("📝 2note",   "note",   eid),
-             _btn("⏭ 2skip",   "skip",   eid)],
-            [_btn("🗑 2del",    "del",    eid),
-             _btn("🚫 2spam",   "spam",   eid)],
-        ]
-    if typ == "DOKLAD" or typ == "FAKTURA":  # legacy fallback
-        return [
-            [_btn("📥 2of",     "of",     eid),
-             _btn("📝 2note",   "note",   eid)],
-            [_btn("✅ 2hotovo", "hotovo", eid),
-             _btn("⏭ 2skip",   "skip",   eid)],
-            [_btn("🗑 2del",    "del",    eid),
-             _btn("🚫 2spam",   "spam",   eid)],
-        ]
-    if typ == "NABÍDKA":
-        return [
-            [_btn("📝 2note",   "note",   eid),
-             _btn("🚫 2unsub",  "unsub",  eid)],
-            [_btn("⏭ 2skip",   "skip",   eid),
-             _btn("🗑 2del",    "del",    eid),
-             _btn("🚫 2spam",   "spam",   eid)],
-        ]
-    if typ == "NOTIFIKACE" or typ == "POTVRZENÍ":
-        return [
-            [_btn("✅ 2hotovo", "hotovo", eid),
-             _btn("⏭ 2skip",   "skip",   eid)],
-            [_btn("🗑 2del",    "del",    eid),
-             _btn("🚫 2spam",   "spam",   eid)],
-        ]
-    if typ == "POZVÁNKA":
-        # TODO blocker D3: '📅 2cal+Accept' a '❌ Decline' tlačítka —
-        # vyžadují Apple Bridge POST /calendar/reply endpoint pro odeslání
-        # Accept/Decline replies pozvateli (přes Mail.app AppleScript).
-        # Zatím jen 2cal (vytvoří event) + skip/del/spam.
-        return [
-            [_btn("📅 2cal",   "cal",  eid),
-             _btn("⏭ 2skip",  "skip", eid)],
-            [_btn("🗑 2del",   "del",  eid),
-             _btn("🚫 2spam",  "spam", eid)],
-        ]
-    if typ == "INFO" or typ == "NEWSLETTER":
-        row1 = [_btn("✅ 2hotovo", "hotovo", eid),
-                _btn("⏭ 2skip",   "skip",   eid)]
-        if has_unsubscribe:
-            row1.append(_btn("🚫 2unsub", "unsub", eid))
-        return [
-            row1,
-            [_btn("🗑 2del",  "del",  eid),
-             _btn("🚫 2spam", "spam", eid)],
-        ]
-    if typ == "ERROR":
-        return [
-            [_btn("✅ 2hotovo", "hotovo", eid),
-             _btn("⏭ 2skip",   "skip",   eid)],
-            [_btn("🗑 2del",    "del",    eid),
-             _btn("🚫 2spam",   "spam",   eid)],
-        ]
-    if typ == "ENCRYPTED":
-        return [
-            [_btn("👁 Otevřu sám", "precteno", eid),
-             _btn("⏭ 2skip",      "skip",     eid)],
-            [_btn("🗑 2del",       "del",      eid),
-             _btn("🚫 2spam",      "spam",     eid)],
-        ]
+    row2 = [_btn("📅 2cal", "cal", eid),
+            _btn("📝 2note", "note", eid)]
+    if has_unsubscribe:
+        row2.append(_btn("🚫 2unsub", "unsub", eid))
 
-    # Unknown TYP — fallback "univerzal"
-    return [
-        [_btn("📥 2of", "of", eid), _btn("⏰ 2rem", "rem", eid),
-         _btn("📅 2cal", "cal", eid), _btn("📝 2note", "note", eid)],
-        [_btn("✅ 2hotovo", "hotovo", eid), _btn("⏭ 2skip", "skip", eid),
-         _btn("🚫 2unsub", "unsub", eid)],
-        [_btn("🗑 2del", "del", eid), _btn("🚫 2spam", "spam", eid)],
+    universal = [
+        [_btn("✅ 2hotovo", "hotovo", eid),
+         _btn("📥 2of",     "of",     eid),
+         _btn("⏰ 2rem",    "rem",    eid)],
+        row2,
+        [_btn("⏭ 2skip",   "skip",   eid),
+         _btn("🗑 2del",    "del",    eid),
+         _btn("🚫 2spam",   "spam",   eid)],
     ]
+
+    if typ == "ENCRYPTED":
+        return [[_btn("👁 Otevřu sám", "precteno", eid)]] + universal
+
+    return universal
 
 
 def _render_buttons(typ: str, email_id: str, has_unsubscribe: bool = False) -> list:
@@ -132,7 +74,8 @@ def notify_classified_emails():
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, mailbox, from_address, subject, typ, firma, ai_confidence, body_text
+        SELECT id, mailbox, from_address, subject, typ, firma, ai_confidence, body_text,
+               raw_payload->'headers'->>'List-Unsubscribe' AS list_unsub
         FROM email_messages
         WHERE typ IS NOT NULL
           AND is_spam = FALSE
@@ -144,7 +87,7 @@ def notify_classified_emails():
     """)
     rows = cur.fetchall()
 
-    for email_id, mailbox, from_addr, subject, typ, firma, confidence, body in rows:
+    for email_id, mailbox, from_addr, subject, typ, firma, confidence, body, list_unsub in rows:
         icon = TYP_ICON.get(typ, "📧")
         conf_str = f"{int((confidence or 0)*100)}%" if confidence else "?"
         short_from = from_addr.split("<")[-1].rstrip(">") if "<" in (from_addr or "") else (from_addr or "?")
@@ -178,7 +121,7 @@ def notify_classified_emails():
         if firma:
             text += f"\nFirma: <b>{escape(firma)}</b>"
 
-        buttons = _render_buttons(typ, str(email_id))
+        buttons = _render_buttons(typ, str(email_id), has_unsubscribe=bool(list_unsub))
         result = send(text, buttons)
 
         if result:
