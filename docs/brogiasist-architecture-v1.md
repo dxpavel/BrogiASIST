@@ -1,6 +1,6 @@
 # BrogiASIST — Architecture Reference v1
 
-> Stav: 2026-04-26 (verze 1.1). DEV fáze. DB, ingest, WebUI, klasifikace, IMAP akce, TG callback funkční. AI learning přes ChromaDB. Třívrstvý spam filtr (Llama + kontakty + Claude). Přílohy do OF přes base64 přenos. PROD deployment plánován.
+> Stav: 2026-04-27 (verze 1.2). PROD na VM 103. DB, ingest, WebUI, klasifikace, IMAP akce, TG callback funkční. AI learning přes ChromaDB. Třívrstvý spam filtr (Llama + kontakty + Claude) — **silent auto-spam DOČASNĚ VYPNUTÝ** (race condition incident 2026-04-27). Univerzální 3×3 TG layout, 9 ACTIONs (přidáno 2del). Přílohy do OF přes base64 přenos.
 
 ---
 
@@ -68,18 +68,20 @@ Klasifikace (classify_emails.py — třívrstvý spam filtr)
   2. POZVÁNKA pravidlo — subject ILIKE 'Invitation:%' → deterministicky, bez Llamy
   3. apple_contacts whitelist — odesílatel v kontaktech → nikdy auto-spam
   4. Llama3.2 → firma / typ / task_status / is_spam / confidence
-  5. Spam handling:
-     ├─ confidence ≥ 0.92 → auto trash + TG info "🗑️ AUTO-SPAM"
-     └─ confidence < 0.92 → Claude Haiku verifikace
-          ├─ cache hit (claude_sender_verdicts) → bez API volání
-          ├─ Claude spam=True → trash + TG info "🗑️ AUTO-SPAM Claude"
-          ├─ Claude spam=False → is_spam=False, normální průchod
-          └─ Claude error → fallback TG spam-check
+  5. Spam handling (⚠️ 2026-04-27: silent auto-trash VYPNUT — `SPAM_AUTO_THRESHOLD=2.0`,
+     viz incident s krouzecka@volny.cz, lessons-learned sekce 38):
+     ├─ Llama is_spam=TRUE → email PROCHÁZÍ jako normální, Pavel klikne 2spam/2del ručně
+     ├─ Claude Haiku verifikace zatím dál běží jako fallback (nebezpečnější část je
+     │  silent move_to_trash, ten je vypnutý)
+     └─ Po stabilizaci root cause race condition se auto-spam vrátí (TG zpráva
+        s tlačítky NE silent execute)
     │
     ▼
 Decide:
-  ├─ AI auto-akce  (chroma_client.find_repeat_action — pattern match nad email_actions)
-  └─ Human review  (Telegram inline tlačítka / Dashboard /ukoly)
+  ├─ Návrh akce z Chromy (chroma_client.find_repeat_action_with_score — pattern match
+  │   nad email_actions; výsledek se NEexekuje silent, ale zobrazí jako zvýrazněné
+  │   tlačítko `⭐ 2X ⭐` v TG zprávě a štítek v Dashboard `/úkoly`. 2026-04-27)
+  └─ Human review  (Telegram inline tlačítka / Dashboard /úkoly)
     │
     ▼
 Execute  (imap_actions.py)
@@ -97,7 +99,7 @@ Learning  (chroma_client.store_email_action)
 - Mirror table vždy zachycuje surová data (raw→DB).
 - Každá akce probíhá fyzicky na IMAP a aktualizuje `email_messages.folder` + `status='reviewed'` + `human_reviewed=TRUE`.
 - Po každé akci se volá `chroma_client.store_email_action()` → embedding + metadata do ChromaDB pro learning.
-- `find_repeat_action()` před notifikací: pokud ≥3 podobné emaily (cosine ≤0.15) měly stejnou akci → automatická exekuce bez TG potvrzení.
+- `find_repeat_action_with_score()` před notifikací: pokud ≥3 podobné emaily (cosine ≤0.15) měly stejnou akci → **návrh** v TG (zvýrazněné tlačítko `⭐ 2X ⭐` + extra řádek nahoře) a v Dashboard `/úkoly` (žluté tlačítko + štítek `⭐ Navrženo: 2X (NN%)`). Silent auto-execute zrušen 2026-04-27 (incident s `krouzecka@volny.cz`).
 - **Pořadí v `_email_action`**: bridge call → DB UPDATE + COMMIT → IMAP move. Nikdy IMAP před commitem — způsobuje row-level lock contention (druhá conn blokuje na UPDATE stejného řádku). Viz lesson #23.
 - **Claude sender cache**: každý odesílatel je verifikován přes Claude API maximálně jednou. Výsledek v `claude_sender_verdicts` (PRIMARY KEY = email adresa).
 - **Kontakt priorita**: classification_rules (manuální) > apple_contacts (whitelist) > Llama AI.
@@ -390,3 +392,22 @@ docker exec brogi_scheduler python backfill_mark_read.py
 | `sql/012_apple_contacts_groups.sql` | apple_contacts.groups jsonb + GIN index |
 | `sql/013_decision_rules.sql` | decision_rules tabulka + 9 default pravidel |
 | `sql/014_email_semantics_v1.sql` | email_messages threading + flags + pending_actions tabulka |
+
+## Implementováno 2026-04-27 (branch `2`)
+
+- **Univerzální 3×3 TG layout** — předchozí per-TYP redukce nahrazena jednotným layoutem (řada 1: 2hotovo/2of/2rem; řada 2: 2cal/2note/2unsub*; řada 3: 2skip/2del/2spam). 2unsub se zobrazí jen pro maily s `List-Unsubscribe` headerem. ENCRYPTED má extra řádek `👁 Otevřu sám`. Detail v `notify_emails._buttons_for_typ`.
+- **Nová ACTION 2del** — univerzální „rychle smazat" (duplicity, šum). Přesun do Trash + Chroma `email_actions` log, ale **NE**zapisuje `classification_rules` (na rozdíl od `2spam`). Handler v `telegram_callback._email_action` (action="del"). 9 ACTIONs celkem.
+- **Predikce z Chromy jako návrh (TG + Dashboard)** — místo silent auto-apply se zobrazí zvýrazněné tlačítko `⭐ 2X ⭐` v TG (extra řádek nahoře + 3×3 hvězdičky) a žluté tlačítko + štítek v Dashboard `/úkoly`. Nový endpoint `POST /emails/suggested` v `services/ingest/api.py` (body `{ids: [uuid,...]}` → `{id: {action, confidence_pct} | None}`). Dashboard `/úkoly` route fail-soft (timeout 10s, bez predikce UI funguje dál). Funkce `chroma_client.find_repeat_action_with_score` (backward-compat wrapper `find_repeat_action` zachován).
+- **Auto-spam VYPNUT (dočasně)** — `SPAM_AUTO_THRESHOLD=2.0` (= nikdy). Race condition v `classify_emails.py` zničil legitimní email od účetní (Apple Contacts whitelist nematchnul kvůli „Siri found in Mail" emailu). Pavel klikne 2spam/2del ručně. Učení v Chromě dál funguje, jen bez auto-execute.
+- **header_bounce pravidlo opraveno** — podmínka přepnuta z `Auto-Submitted: auto-generated` (matchovala MantisBT/GitHub/monitoring) na `Content-Type: multipart/report` (RFC 3464 standard pro Delivery Status Notifications). Změna v `sql/013_decision_rules.sql` + DB update na PROD VM 103.
+- **Chroma audit/dedup nástroje** — `services/ingest/chroma_audit.py` (read-only detekce 5 typů problémů: D1 duplicity, D2 protichůdné akce, D3 stale records, D4 whitelist konflikt, D5 sirotci) + `services/ingest/chroma_dedup.py` (deduplikace D1; `--dry-run` default, `--apply` skutečné smazání). První audit (2026-04-26): 132 → 113 záznamů po smazání 19 duplicit.
+- **CLAUDE.md v rootu repa** — autoritativní projektová pravda (16 sekcí: PROD infra VM 103, ENV, deploy workflows, gotchas, TYP/STATUS/ACTION sumár, BUG indexy, commit style). Načítá se automaticky na startu každé Claude Code session.
+
+## Nové komponenty 2026-04-27
+
+| Modul / Soubor | Účel |
+|---|---|
+| `services/ingest/chroma_audit.py` | Read-only detekce 5 typů problémů v ChromaDB `email_actions` |
+| `services/ingest/chroma_dedup.py` | Deduplikace D1 (stejný sender + normalizovaný subject) — preferuje human_corrected, nejnovější |
+| `services/ingest/api.py:POST /emails/suggested` | Batch endpoint pro Dashboard `/úkoly` predikce z Chromy |
+| `chroma_client.find_repeat_action_with_score` | Vrací (action, match_count, total_close) pro UI návrhy |

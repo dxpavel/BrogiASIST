@@ -1,7 +1,7 @@
 # BrogiASIST — Lessons Learned v1
 
 > Jazyk: česky. Určeno pro budoucí vývojáře nebo AI asistenty, kteří na projektu pracují.
-> Stav: 2026-04-26 (release 1.1). Aktualizuj při každém novém zjištění.
+> Stav: 2026-04-27 (release v2 patch). Aktualizuj při každém novém zjištění.
 
 ---
 
@@ -883,6 +883,90 @@ orthogonal signál) dost dobré.
 - Kontaktové **emails/phones lze získat samostatným endpointem** (`/contacts/full?id=X`)
   pokud potřebné — refresh on-demand.
 - Detail v `services/apple-bridge/main.py:contacts_all()`.
+
+---
+
+## 38. Silent auto-spam = race condition past — vždy human-in-the-loop pro destruktivní akce (2026-04-27)
+
+### Incident
+2026-04-27 14:05:47 logy ukázaly:
+
+```
+[INFO] move_to_trash OK: dxpavel@icloud.com uid=46122 → Deleted Messages
+[INFO] SPAM (auto trash, 100%): Re: dane 2025
+[INFO] Klasifikováno: firma=PRIVATE typ=ÚKOL spam=false (100%)
+```
+
+Email od `krouzecka@volny.cz` (Pavlova účetní, kontakt v Apple Contacts.app, ale
+s emailem typu „Siri found in Mail" které JXA nevidí → `ingest_contacts` ho
+nezahrnul → `_is_contact()` whitelist nematchnul). Llama označila spam
+confidence 1.0 → silent move_to_trash. Vzápětí stejný email znovu klasifikován
+jako typ=ÚKOL spam=false, ale akce už proběhla (klasický race condition v
+`classify_emails.py`).
+
+### Root cause kandidáti (zatím nevyřešeno)
+- Souběh ingest IDLE push + scan job — stejný email zpracován dvakrát s různými
+  výstupy Llamy (deterministická Llama není 100%).
+- DB-level: nedostatečný `LOCK` / `FOR UPDATE SKIP LOCKED` při výběru `status='new'`
+- Apple Contacts whitelist neexponuje emaily typu „Siri found in Mail" → falešně
+  negativní `_is_contact()` pro Pavlovu účetní
+
+### Dočasný fix
+`classify_emails.SPAM_AUTO_THRESHOLD = 2.0` (= podmínka `confidence > 2.0` nikdy
+nesplněna → silent auto-trash neběží). Učení v Chromě (`store_email_action`,
+`find_repeat_action`) dál funguje, jen bez auto-execute.
+
+Pavel klikne 2spam / 2del ručně na TG.
+
+### Poučení
+- **Silent destruktivní akce = nepřípustné** dokud není 100% zajištěna idempotence
+  a deterministická klasifikace.
+- **Auto-apply z Chromy též vypnut** (commit 2837dae) — místo toho se vzor
+  zobrazí jako návrh (`⭐ Navrženo: 2X (NN%) ⭐`) a Pavel klikne.
+- **Pattern**: pro každou novou „auto" funkci se zeptat: „co se stane, když
+  klasifikace (Llama / Chroma / heuristika) je flipnutá v dalších 5s?"
+  Pokud odpověď zahrnuje „mail je v Trash", potřebujeme TG zprávu místo silent
+  execute.
+
+---
+
+## 39. `Auto-Submitted: auto-generated` ≠ bounce — RFC 3464 vs běžné notifikace (2026-04-27)
+
+### Incident
+MantisBT issue notifikace [HOSPODARY 0000255/0000256] od
+`servicedesk@dxpsolutions.cz` dostala TYP=ERROR. Důvod: pravidlo `header_bounce`
+v `decision_rules` matchovalo header `Auto-Submitted: auto-generated`, který má
+**každá** systémová notifikace (MantisBT, GitHub, monitoring), ne jen reálné
+DSN bounce reporty.
+
+### Standard
+RFC 3464 (Delivery Status Notifications) definuje:
+
+```
+Content-Type: multipart/report; report-type=delivery-status; boundary="..."
+```
+
+Toto má **POUZE** reálný bounce. `Auto-Submitted: auto-generated` má cokoliv
+co není odpověď člověka.
+
+### Fix
+`sql/013_decision_rules.sql` rule `header_bounce`:
+
+```sql
+-- před: condition matchovala Auto-Submitted contains 'auto-generated'
+-- po:   condition matchuje Content-Type contains 'multipart/report'
+```
+
+Plus DB UPDATE na PROD VM 103 (rule + dva falešně klasifikované emaily reset
+typ=NULL, status='new', human_reviewed=FALSE) — ty pak prošly znova přes
+opravený engine.
+
+### Poučení
+- **Header detekce v decision_rules vyžaduje znalost RFC** — `Auto-Submitted`
+  je široký, `multipart/report` je úzký a deterministický.
+- Po opravě: skutečné bounce DSN dostávají TYP=ERROR (≥95 % bounce trafficu),
+  MantisBT/GitHub/monitoring jdou na `ai_fallback` (Llama → typicky NOTIFIKACE).
+- CLAUDE.md sekce 12 (gotchas) přidán řádek s tímto rozdílem.
 
 ---
 

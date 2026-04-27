@@ -1,8 +1,8 @@
 ---
 Název: Datový a procesní slovník BrogiASIST
 Soubor: docs/brogiasist-data-dictionary-v1.md
-Verze: 4.2 (release 1.1)
-Poslední aktualizace: 2026-04-26
+Verze: 4.3 (release v2 patch 2026-04-27)
+Poslední aktualizace: 2026-04-27
 Popis: DB schéma, procesní tok, AI vrstvy, Telegram pipeline — podle reality v kódu
 ---
 
@@ -25,19 +25,17 @@ raw kopie → PostgreSQL (mirror tabulka)
   2c. apple_contacts whitelist — odesílatel v kontaktech → blokuje AI spam
   3. Llama3.2 přes Ollama → firma / typ / task_status / is_spam / confidence
   4. Kontakt override: in_contacts AND is_spam → is_spam=False
-  5. Spam handling:
-     ├─ confidence ≥ 0.92 → auto trash + TG "🗑️ AUTO-SPAM"
-     └─ confidence < 0.92 → Claude Haiku verifikace (claude_sender_verdicts cache)
-          ├─ spam=True → trash + TG "🗑️ AUTO-SPAM Claude"
-          ├─ spam=False → is_spam=False, normální průchod
-          └─ error → fallback TG spam-check
+  5. Spam handling (⚠️ 2026-04-27 silent auto-trash VYPNUT — `SPAM_AUTO_THRESHOLD=2.0`):
+     ├─ Llama is_spam=TRUE → email PROCHÁZÍ jako normální, Pavel klikne 2spam/2del ručně v TG
+     └─ Claude Haiku fallback (cache `claude_sender_verdicts`) zůstává pro budoucí re-enable
   │
   ▼ DECIDE
-Auto-akce: chroma_client.find_repeat_action (≥3 podobné, cosine ≤0.15)
-Human review: notify_emails.py → Telegram inline tlačítka
+Návrh akce z Chromy: chroma_client.find_repeat_action_with_score (≥3 podobné, cosine ≤0.15)
+   → zvýraznění tlačítka v TG zprávě / štítek v Dashboard `/úkoly`, NE silent execute
+Human review: notify_emails.py → Telegram inline tlačítka (univerzální 3×3 layout)
   │
   ▼ EXECUTE (telegram_callback.py / api.py / classify_emails.py)
-hotovo / přečteno / spam / of / rem / note / unsub / skip / cal
+hotovo / přečteno / spam / of / rem / note / unsub / skip / cal / del
   │  imap_actions: mark_read | move_to_trash | move_to_brogi_folder
   │  DB update: folder, status='reviewed', human_reviewed=TRUE
   │  of: Apple Bridge /omnifocus/add_task (body_text[:1500] + file:// přílohy)
@@ -319,14 +317,16 @@ Indexy: `(source_type, source_id)`, `status`
 | `id` | `email_messages.id` (UUID jako string) |
 | `embedding` | vektor z Ollama `nomic-embed-text` (cosine space) |
 | `document` | `"<from_address> <subject> <body[:400]>"` |
-| `metadata.action` | `mark_read` / `hotovo` / `precteno` / `spam` / `unsub` / `of` / `rem` / `note` / `ceka` |
+| `metadata.action` | `mark_read` / `hotovo` / `precteno` / `spam` / `unsub` / `of` / `rem` / `note` / `ceka` / `del` (2026-04-27) |
 | `metadata.typ` | klasifikace (NEWSLETTER, FAKTURA, …) |
 | `metadata.firma` | klasifikace |
 | `metadata.mailbox` | email adresa účtu |
 
 **Použití:**
 - `store_email_action()` po každé akci (auto / TG / WebUI)
-- `find_repeat_action()` před TG notifikací — pokud najde ≥3 podobné s cosine ≤0.15 a stejnou akcí → automatická exekuce, žádná TG zpráva
+- `find_repeat_action_with_score()` před TG notifikací — pokud najde ≥3 podobné s cosine ≤0.15 a stejnou akcí → **návrh** (zvýrazněné tlačítko `⭐ 2X ⭐` v TG, žluté tlačítko + štítek v Dashboard `/úkoly`). Silent auto-execute zrušen 2026-04-27.
+- Backward-compat wrapper `find_repeat_action()` zachován pro stará volání.
+- Endpoint `POST /emails/suggested` (services/ingest/api.py) — batch verze pro Dashboard route `/úkoly`.
 - Konstanty: `AUTO_THRESHOLD_COUNT=3`, `AUTO_THRESHOLD_DIST=0.15`
 
 ---
@@ -532,25 +532,22 @@ email_messages INSERT (status='new') + přílohy → attachments tabulka + disk
 3. Llama3.2 → JSON: firma, typ, task_status, is_spam, confidence, reason
 4. Kontakt override: if in_contacts AND is_spam → is_spam=False
 5. _save_classification (status='classified')
-6. Spam handling:
-   ├─ is_spam AND confidence ≥ 0.92 → move_to_trash + TG "🗑️ AUTO-SPAM (X%)"
-   └─ is_spam AND confidence < 0.92 → _claude_verify_spam()
-        ├─ cache hit (claude_sender_verdicts) → žádné API volání
-        ├─ cache miss → Claude Haiku API → INSERT claude_sender_verdicts
-        ├─ claude.is_spam=True → move_to_trash + TG "🗑️ AUTO-SPAM Claude [cache] (X%)"
-        ├─ claude.is_spam=False → _save_classification(is_spam=False), normální průchod
-        └─ claude=None (error) → send_spam_check (TG spam-check s tlačítky)
+6. Spam handling (⚠️ 2026-04-27 silent auto-trash VYPNUT — `SPAM_AUTO_THRESHOLD=2.0`):
+   └─ is_spam=TRUE → email PROCHÁZÍ jako normální, Pavel klikne 2spam/2del v TG.
+      Claude Haiku verifikace + `claude_sender_verdicts` cache se zachovaly v kódu
+      pro budoucí re-enable, ale silent move_to_trash neběží.
 7. Auto-move: confidence ≥ 0.85 AND typ IN (NOTIFIKACE,NEWSLETTER,ESHOP,POTVRZENÍ,FAKTURA)
    → move_to_brogi_folder(<typ>)
   │
   ▼ notify_emails.py (každé 2 min)
 SELECT WHERE typ IS NOT NULL AND is_spam=FALSE AND tg_notified_at IS NULL
   │
-  ▼ Před TG zprávou: chroma_client.find_repeat_action(from, subject, body)
-  │   → pokud match: provede akci automaticky (mark_read / hotovo / move / …)
-  │   → store_email_action po akci + TG "🔁 Opakuji akci: X"
+  ▼ Před TG zprávou: chroma_client.find_repeat_action_with_score(from, subject, body)
+  │   → pokud match: TG zpráva má extra řádek `⭐ Navrženo: 2X (NN%) ⭐`
+  │     a v 3×3 layoutu obalí predikované tlačítko hvězdičkami `⭐ 2X ⭐`.
+  │     **NEexekuuje** akci — Pavel musí kliknout (silent auto-apply zrušen 2026-04-27).
   │
-  ▼ Pokud žádný pattern: pošli TG zprávu s inline tlačítky
+  ▼ Pošle TG zprávu s univerzálním 3×3 layoutem inline tlačítek
 → nastav tg_notified_at=NOW(), tg_message_id=<msg_id>
   │
   ▼ telegram_callback.py (polling každé 2s — daemon thread)
@@ -564,6 +561,7 @@ Zpracuj kliknutí:
   note     → POST apple-bridge /notes/add + move_to_brogi_folder(HOTOVO)
   cal      → POST apple-bridge /calendar/add + move_to_brogi_folder(HOTOVO)
   unsub    → is_spam=TRUE pro celý from_address + classification_rules INSERT + move_to_trash
+  del      → human_reviewed=TRUE + status='reviewed' + move_to_trash (BEZ classification_rules INSERT — jednorázové smazání). 2026-04-27.
   skip     → jen answer_callback, nic nemění
   │
   ▼ Po každé akci:
@@ -581,6 +579,7 @@ Zpracuj kliknutí:
 - `email:note:{id}`
 - `email:cal:{id}`
 - `email:unsub:{id}`
+- `email:del:{id}` (2026-04-27)
 - `email:skip:{id}`
 - `spam:yes:{id}` (legacy)
 - `spam:no:{id}` (legacy)
@@ -621,12 +620,12 @@ topic_signals (keyword seznam)
 - URL: `http://host.docker.internal:11434`
 - Nastupuje pokud vrstva 1 nemá pravidlo
 - Výstup: JSON s `firma` / `typ` / `task_status` / `is_spam` / `confidence` / `reason`
-- Auto-spam threshold: `confidence > 0.92` → označí bez TG notifikace
+- Auto-spam threshold: `SPAM_AUTO_THRESHOLD=2.0` (= nikdy aktivní; dočasně vypnuto 2026-04-27 po race condition incidentu — viz lessons-learned sekce 38)
 
 ### Vrstva 3 — Claude Haiku (spam verifikace)
 - Model: `claude-haiku-4-5` přes Anthropic API (httpx, bez SDK)
 - URL: `https://api.anthropic.com/v1/messages`
-- Nastupuje pokud Llama označí spam s `confidence < 0.92`
+- Nastupuje pokud Llama označí spam s `confidence < 0.92` (kód zachován; aktuálně dormant kvůli `SPAM_AUTO_THRESHOLD=2.0`)
 - **Cache**: `claude_sender_verdicts` — každý odesílatel verifikován max. jednou
 - Výstup: `{"is_spam": bool, "reason": "1 věta"}`
 - Fallback: pokud API selže → TG spam-check (neztrácíme email)

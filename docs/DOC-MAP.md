@@ -1,8 +1,8 @@
 ---
 Název: DOC-MAP
 Soubor: docs/DOC-MAP.md
-Verze: 4.6 (release v2 in progress, branch `2`)
-Poslední aktualizace: 2026-04-26
+Verze: 4.7 (release v2 patch 2026-04-27)
+Poslední aktualizace: 2026-04-27
 Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, neexistuje.
 ---
 
@@ -16,9 +16,9 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 |---|---|---|
 | `CONTEXT-NEW-CHAT.md` | Aktuální stav, cesty, co běží, co chybí — **branch `2` = v2 in progress** | ✅ 2026-04-26 |
 | `SESSION-HANDOFF-D-CONTINUATION.md` | **PRIORITNÍ** handoff pro pokračování blockeru D — HIGH/MEDIUM/LOW priority + první krok | ✅ 2026-04-26 |
-| `brogiasist-architecture-v1.md` | Stack, services, endpointy, DB schéma, dataflow, IMAP akce — **vč. v2 komponent (decision_engine, pending_worker)** | ✅ 2026-04-26 |
-| `brogiasist-data-dictionary-v1.md` | Datový model, DB tabulky, procesní tok, AI vrstvy — **vč. decision_rules + pending_actions + nové sloupce** | ✅ 2026-04-26 |
-| `brogiasist-lessons-learned-v1.md` | Poučení z praxe — IMAP, JXA, Docker, action logging, **+ sekce 35–37** (BUG-008 posix_spawn, TCC FDA launchd, JXA per-property optimalizace) | ✅ 2026-04-26 |
+| `brogiasist-architecture-v1.md` | Stack, services, endpointy, DB schéma, dataflow, IMAP akce — **vč. v2 komponent (decision_engine, pending_worker) + 2026-04-27 (univerzální 3×3 layout, 2del, predikce-jako-návrh, auto-spam vypnut)** | ✅ 2026-04-27 |
+| `brogiasist-data-dictionary-v1.md` | Datový model, DB tabulky, procesní tok, AI vrstvy — **vč. decision_rules + pending_actions + 9. ACTION 2del + endpoint POST /emails/suggested** | ✅ 2026-04-27 |
+| `brogiasist-lessons-learned-v1.md` | Poučení z praxe — IMAP, JXA, Docker, action logging, **+ sekce 38** (silent auto-spam race condition), **+ sekce 39** (header_bounce multipart/report) | ✅ 2026-04-27 |
 | `brogiasist-infrastructure-v1.md` | Stroje, porty, sítě, Docker, Apple Bridge — **DEV vs PROD** | ✅ 2026-04-26 |
 | `brogiasist-semantics-v1.md` | **Email TYP/STATUS/ACTION semantika** — kanonická spec + sekce 21 (implementation status na branch `2`) | ✅ 2026-04-26 v1.2 |
 | `BUGS.md` | Známé bugy a tech debt — **BUG-001/004/005/006/009/010 OPEN**, BUG-002/003 FIXED v 1.1, **BUG-007/008 FIXED 2026-04-26** | ✅ 2026-04-26 |
@@ -60,8 +60,9 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 
 | Cesta | Popis |
 |---|---|
-| `services/dashboard/` | FastAPI dashboard + Jinja2 templates (v2: kostičky `.typ-box` + grafická semantika sekce 19) |
-| `services/ingest/` | Scheduler, IMAP, Telegram, klasifikace + **decision_engine.py (v2)** + **pending_worker.py (v2)** |
+| `CLAUDE.md` (root) | **Autoritativní projektová pravda** — 16 sekcí (PROD infra VM 103, ENV, deploy, gotchas, TYP/STATUS/ACTION sumár, BUG indexy, commit style). Načítá Claude Code automaticky při startu session. Vyhrává nad memory. (2026-04-26, 2026-04-27 patch) |
+| `services/dashboard/` | FastAPI dashboard + Jinja2 templates (v2: kostičky `.typ-box` + grafická semantika sekce 19) + predikce z Chromy v `/úkoly` (2026-04-27) |
+| `services/ingest/` | Scheduler, IMAP, Telegram, klasifikace + **decision_engine.py (v2)** + **pending_worker.py (v2)** + **chroma_audit.py / chroma_dedup.py (2026-04-27)** |
 | `services/apple-bridge/` | FastAPI bridge pro Apple API (host, port 9100) — **BUG-008 fix `os.posix_spawn()`** + nové endpointy `/of/task/{id}/...`, `/notes/{id}/...`, JXA `/contacts/all` |
 | `sql/` | SQL migrace 001–014: 012_apple_contacts_groups.sql, 013_decision_rules.sql, 014_email_semantics_v1.sql (vše v branch `2`) |
 | `.env` | Environment proměnné (`OLLAMA_URL`, `APPLE_BRIDGE_URL`, IMAP credentials, ...) |
