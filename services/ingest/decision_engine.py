@@ -105,12 +105,18 @@ def _eval_group(condition: dict, email: dict, conn) -> tuple[bool, list[str]]:
         return False, []
     cur = conn.cursor()
     try:
+        # Case-insensitive match přes jsonb_path_query: emails uložené v Apple
+        # Contacts mají různý casing (Koscusko@seznam.cz vs koscusko@seznam.cz),
+        # pure jsonb @> by selhal. Porovnáváme lower(value) == lower(addr).
         cur.execute("""
             SELECT groups FROM apple_contacts
-            WHERE emails @> %s::jsonb
+            WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements(emails) AS e
+                WHERE lower(e->>'value') = lower(%s)
+            )
               AND jsonb_array_length(groups) > 0
             LIMIT 1
-        """, (json.dumps([{"value": addr}]),))
+        """, (addr,))
         row = cur.fetchone()
     finally:
         cur.close()
