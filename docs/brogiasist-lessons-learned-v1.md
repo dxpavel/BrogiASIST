@@ -970,6 +970,92 @@ opravený engine.
 
 ---
 
+## Lekce 38 — JSONB containment (`@>`) je case-sensitive (BUG-011)
+
+**Datum:** 2026-04-27, fix commit `af5df96`
+
+### Co se stalo
+Po fixu BUG-009 (group rules dataset) se znovu spustila verifikace decision
+engine na 4 personal kontaktech. Roman Hruby (`roman.hruby@schmachtl.cz`,
+MEDVEDI 🧸) matchnul. Honzik Košťál (`Koscusko@seznam.cz` v DB) **nematchnul**
+i přesto, že sender_personal rule MÁ FOCENI 📸 v podmínce.
+
+### Příčina
+PostgreSQL JSONB `@>` (containment) je **case-sensitive**. Query
+`emails @> '[{"value":"koscusko@seznam.cz"}]'::jsonb` vůči DB hodnotě
+`{"value":"Koscusko@seznam.cz"}` vrátí FALSE. Apple Contacts ukládá email
+přesně tak, jak ho uživatel napsal.
+
+### Fix
+Místo `@>` použít `EXISTS` + `jsonb_array_elements` + oboustranné `LOWER()`:
+
+```sql
+-- Před (case-sensitive, FAIL):
+WHERE emails @> %s::jsonb
+-- Po (case-insensitive, OK):
+WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(emails) AS e
+              WHERE LOWER(e->>'value') = LOWER(%s))
+```
+
+### Poučení
+- **JSONB `@>` operátor nepoužívat na string fieldy s casing inkonzistencí**
+  (uživatelské vstupy, různé importy, externí systémy).
+- Pro array-of-object vždy `EXISTS (jsonb_array_elements(...))` — explicit,
+  snadno přidat normalizaci (LOWER, TRIM, regexp).
+- Po každém **bulk re-ingestu z external source** spustit smoke test na 5–10
+  reálných odesílatelích z různých skupin (ne jen 1).
+
+---
+
+## Lekce 39 — OmniFocus task.id() persistence pro threading (H2)
+
+**Datum:** 2026-04-27, commit `e37f576`
+
+### Architektonický problém
+Thread continuation flow vyžaduje znát `of_task_id` pro každý email který
+předtím vyvolal akci `2of`. Bez task_id v DB → reply na thread → notify_emails
+posílá normální TG s `[2of]` → Pavel klikne → vznikne **duplicitní OF task**.
+
+### Diagnóza
+Apple Bridge `/omnifocus/add_task` **NEVRACEL** `task.id()` — JXA response
+obsahoval jen `{ok, name}`. Schema `email_messages.of_task_id` přitom
+existoval (sql/014) — sloupec byl měsíc mrtvý.
+
+### Fix (3 vrstvy)
+1. **Bridge JXA:** `JSON.stringify({ok, name, task_id: task.id()})`
+2. **Callback:** zaveden `_bridge_call_full()` → vrací `(ok, json|None)`.
+   Existující `_bridge_call()` zachován jako thin wrapper pro 4 ostatní
+   callery (rem/note/cal) — backward compat bez refactoru.
+3. **Action handler `of`:** po úspěchu `UPDATE email_messages SET
+   of_task_id=%s, of_linked_at=NOW()`. Když Bridge vrátí None (pending
+   queue offline mode), neselhat — log.warning a pokračovat bez linkování.
+
+### Detection logic v notify_emails
+```sql
+LEFT JOIN LATERAL (
+    SELECT em2.of_task_id, em2.subject AS prev_subject
+    FROM email_messages em2
+    WHERE em2.thread_id = em.thread_id
+      AND em2.of_task_id IS NOT NULL
+      AND em2.id <> em.id
+    ORDER BY em2.sent_at ASC LIMIT 1
+) thr ON em.thread_id IS NOT NULL
+```
+ORDER BY ASC → vrací **původní** task (nejstarší v threadu), ne poslední append.
+
+### Poučení
+- **Schema sloupec bez funkčního zdroje dat = mrtvý sloupec.** Při PR
+  reviewu kontrolovat: kdo data zapíše? Pokud nikdo, sloupec smazat
+  nebo přidat na backlog.
+- **Backward-compat při změně bridge call signature:** thin wrapper
+  > refactor všech callerů. Riziko regrese minimální.
+- **Pending queue degraded mode:** bridge call → enqueue (offline) vrací
+  `True` ale `task_id=None`. Persist handler musí umět tenhle stav
+  (log.warning, task_status='→OF' bez of_task_id). Pending_worker později
+  proběhne, ale **task_id zpětně nedoplní** (TODO budoucí session).
+
+---
+
 ## Co ještě nebylo řešeno / TODO
 
 - **iMessage ingest** — bridge endpoint naplánován, ingest skript a DB tabulka chybí

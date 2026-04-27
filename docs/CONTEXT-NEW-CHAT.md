@@ -1,15 +1,16 @@
 ---
 Název: CONTEXT-NEW-CHAT
 Soubor: docs/CONTEXT-NEW-CHAT.md
-Verze: 6.0 (release v2 in progress, branch `2`)
-Poslední aktualizace: 2026-04-26
+Verze: 7.0 (release v2 in progress, branch `2`)
+Poslední aktualizace: 2026-04-27
 Popis: Kontext pro nový chat — stav, cesty, problémy
 ---
 
 # CONTEXT-NEW-CHAT — BrogiASIST
 
 > **POZOR:** Aktivní implementace je na **branch `2`** (release v2 — Email Semantics v1).
-> Last commit: `110883e`. Pro detailní handoff viz `docs/SESSION-HANDOFF-D-CONTINUATION.md`.
+> Last commit: `e37f576` (H2 threading TG flow).
+> Pro detailní handoff viz `docs/SESSION-HANDOFF-D-CONTINUATION.md` (v2.0).
 > Stable bod návratu: tag `v1.1` (commit `ee483ba` na main).
 
 ---
@@ -21,7 +22,16 @@ Cíl: z 1-2h operativy denně na 10-15 minut.
 
 ---
 
-## Aktuální stav (2026-04-26)
+## Aktuální stav (2026-04-27)
+
+### Co bylo dnes uděláno (2026-04-27 session)
+- **H1 / BUG-009** ✅ — JXA `/contacts/all` vrací emails+phones, datasety sjednocené (1181 řádků, 512 s email∩groups)
+- **H3** ✅ — decision_engine flagy persistují do `email_messages` (sql/015), visual indikátory v TG (⭐ VIP, 👤 personal, 👥 GROUPS), `no_auto_action` blokuje auto-trash spam
+- **BUG-011** ✅ — case-insensitive email match v group rules (jsonb_array_elements + LOWER())
+- **H2** ✅ — Bridge `add_task` vrací task_id, callback persistuje of_task_id, threading detekce + speciální TG zpráva s 4 buttony (📂/📎/➕/⏭)
+- **Backfill** 70 historických emailů → 4 dostaly `is_personal=true`
+
+
 
 ### PROD běží na VM 103 (10.55.2.231) — 5 kontejnerů + Apple Bridge
 - **VM 103 (Proxmox)** — Ubuntu 24.04, brogiasist Docker stack:
@@ -52,7 +62,7 @@ Cíl: z 1-2h operativy denně na 10-15 minut.
 **Klasifikace + akce (v2 — branch `2`):**
 - **decision_rules engine** (`decision_engine.py`, 9 pravidel v DB) — runs PŘED Llamou:
   - header_list (List-Id → TYP=LIST), header_encrypted, header_oof (OOO), header_bounce
-  - group_vip / sender_personal (z apple_contacts.groups) — **TODO BUG-009: data ve 2 disjoint datasets, group rules zatím nematchují**
+  - group_vip / sender_personal (z apple_contacts.groups) — **FUNGUJE od 2026-04-27, BUG-009+BUG-011 fixed**
   - chroma_match (cosine < 0.15), self_sent (X-Brogi-Auto), ai_fallback
 - **Llama3.2 prompt** vrací 6 TYPů: ÚKOL, DOKLAD, NABÍDKA, NOTIFIKACE, POZVÁNKA, INFO (ERROR/LIST/ENCRYPTED detekuje engine pre-AI)
 - **Per-TYP TG tlačítka** dle spec sekce 7 (`notify_emails.py:_buttons_for_typ()`)

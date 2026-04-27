@@ -392,7 +392,7 @@ curl -sm 5 http://localhost:9100/health
 
 **Severita:** HIGH (blokuje VIP/personal pravidla v decision_rules engine)
 **Zjištěno:** 2026-04-26 (blocker C verifikace)
-**Status:** OPEN — fix navržen, vyžaduje rozšíření JXA + cleanup starých záznamů
+**Status:** **FIXED 2026-04-27 commit `6b43643`** — JXA `/contacts/all` rozšířen o per-kontakt `emails`/`phones`, starý dataset (1180 řádků) smazán, re-ingest. Po fixu: 1181 kontaktů, **512** s `email ∩ groups` (před: 0). Decision engine query teď matchne. Verify: 4 backfilled emaily správně dostaly `is_personal=true` (Drexler RODINA 🛠, Zámečnictví KAMARADI 🥂, ...).
 
 ### Popis
 Tabulka `apple_contacts` obsahuje **2360 řádků** ve dvou disjoint datasets:
@@ -485,6 +485,55 @@ Pavel rozhodne mezi (a)/(b)/(c)/(d). Jakmile máme rozhodnutí:
 3. Ingest detekuje auto-marker → skip klasifikace (neuloží do `email_messages`
    nebo uloží s `status='ignored'`)
 4. Pavel v dashboardu nevidí svůj vlastní reply jako nový k klasifikaci
+
+---
+
+## BUG-011 — Case-insensitive email match v decision_engine group rules
+
+**Severita:** MEDIUM (skrytá příčina nematchování pro ~30 % personal kontaktů)
+**Zjištěno:** 2026-04-27 (po H3 deploy + smoke test)
+**Status:** **FIXED 2026-04-27 commit `af5df96`**
+
+### Popis
+Po fixu BUG-009 jsme verifikovali decision engine: pro `roman.hruby@schmachtl.cz`
+(MEDVEDI 🧸) vrátil `is_personal=true`. Ale pro `Koscusko@seznam.cz` (FOCENI 📸,
+v adresáři jako "Honzik Košťál") rule **nematchla** — flag zůstal `false`.
+
+### Příčina
+DB hodnota `Koscusko@seznam.cz` má capital K (původně psaný v Apple Contacts).
+`_extract_email_addr()` vrací lowercase `koscusko@seznam.cz`. JSONB `@>` operátor
+je **case-sensitive**, containment match selhal:
+
+```python
+# PŘED: case-sensitive
+SELECT groups FROM apple_contacts
+WHERE emails @> '[{"value": "koscusko@seznam.cz"}]'::jsonb  ← FAIL (DB má "Koscusko")
+```
+
+### Fix
+Nahrazeno přes `jsonb_array_elements` + oboustranné `LOWER()`:
+
+```python
+SELECT groups FROM apple_contacts
+WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(emails) AS e
+              WHERE LOWER(e->>'value') = LOWER(%s))
+  AND jsonb_array_length(groups) > 0
+```
+
+### Performance impact
+Per-rule call dělá 1 SQL query na 1181 řádků JSONB scan. Bez indexu cca ~ms.
+Pokud bude `decision_rules` engine spouštěn pro velký objem (>100 emailů/min),
+zvážit funkční index `CREATE INDEX ON apple_contacts USING gin
+((lower(emails::text)) gin_trgm_ops)`. Dnes není potřeba.
+
+### Jak ověřit
+```python
+from decision_engine import evaluate_email
+d = evaluate_email({'from_address': 'Koscusko@seznam.cz', 'subject': 't',
+                    'raw_payload': {'headers':{}}, 'body_text': ''})
+assert d['is_personal'] is True
+assert 'FOCENI 📸' in d['matched_groups']
+```
 
 ---
 

@@ -1,19 +1,46 @@
 ---
 Název: SESSION-HANDOFF-D-CONTINUATION
 Soubor: docs/SESSION-HANDOFF-D-CONTINUATION.md
-Verze: 1.0
+Verze: 2.0
 Vytvořeno: 2026-04-26 22:30
-Popis: Handoff prompt pro pokračování blockeru D z branch `2`.
-       Po dnešní session (BUG-008 fix + A/B/C/D1/D2/D4/D5/D3-partial)
-       zbývá doladit group matching, threading TG flow, a další 2 D3 endpointy.
+Aktualizováno: 2026-04-27 21:35
+Popis: Handoff pro pokračování blockeru D z branch `2`.
+       Status po session 2026-04-27: H1 ✅, H3 ✅, H2 ✅, BUG-009 ✅, BUG-011 ✅.
+       Zbývá: M1–M4 (calendar/reply, 2undo, STATUS column, WebUI rules editor)
+       + D3 zbylé 2 endpointy (mail/send, calendar/reply — vyžaduje rozhodnutí
+       o headers, viz BUG-010) + L1–L5 vychytávky.
 ---
 
-# BrogiASIST — Session Handoff (D continuation)
+# BrogiASIST — Session Handoff (D continuation, v2.0)
+
+## ⚠️ UPDATE 2026-04-27 — Co se stalo v této session
+
+**HOTOVO** (commits na branch `2`):
+- `6b43643` **H1 / BUG-009** — JXA `/contacts/all` rozšířen o emails+phones,
+  starý dataset (1180) smazán, re-ingest. **1181 kontaktů, 512 s email∩groups**.
+- `394ec5e` **H3** — Decision flagy persist do `email_messages`
+  (sql/015_decision_flags.sql), wire `no_auto_action` v classify, visual
+  indikátory v notify (⭐ VIP, 👤 personal, 👥 GROUPS).
+- `af5df96` **BUG-011** — case-insensitive email match v decision_engine
+  (jsonb @> → jsonb_array_elements + LOWER()).
+- `e37f576` **H2** — Bridge `add_task` vrací `task_id`, callback persistuje
+  `of_task_id`, 3 nové handlery (`of_open`/`of_append`/`of_new`),
+  notify_emails detekuje thread + speciální zpráva s 4 buttony.
+
+**Plus** backfill 70 historických emailů → 4 dostaly is_personal flag
+(Drexler RODINA 🛠, Zámečnictví KAMARADI 🥂).
+
+**Stav PROD:**
+- Apple Bridge healthy, posix_spawn fix drží (BUG-008)
+- Scheduler rebuild 2× (po H3 + po H2), běží
+- DB: 71 emailů (4 s is_personal), 1181 contacts, 9 decision_rules
+
+---
 
 ## Stav repa
 
 - **Branch:** `2` (implementace v2 — Email Semantics v1)
-- **Last commit:** `110883e` — `feat(blocker D3): Apple Bridge /notes/{id} + append`
+- **Last commit:** `e37f576` — `feat(H2): threading TG flow`
 - **Tag výchozího bodu:** `v1.1` (commit `ee483ba` na main, stable PROD)
 - **Push:** vše na [github.com/dxpavel/BrogiASIST/tree/2](https://github.com/dxpavel/BrogiASIST/tree/2)
 
@@ -157,13 +184,14 @@ Pavel má Asperger + ADHD:
 
 ## Co ZBÝVÁ (priorita HIGH → LOW)
 
-### 🍎 HIGH (před produkcí v2)
+### 🍏 HIGH — VYŘEŠENÉ 2026-04-27
 
-| # | Co | Náročnost | Detail |
-|---|---|---|---|
-| **H1** | **BUG-009: Group matching v decision_rules** | ~2 h | Data ve 2 disjoint datasets v `apple_contacts`: 1180 starých (z DEV ingestu) má `emails` ale `groups=[]`, 1180 nových (z PROD JXA) má `groups` ale `emails=[]`. SQL JOIN přes email → groups nematchne nikdy → `group_vip`/`sender_personal` rules nikdy netriggerují. **Fix:** rozšířit JXA `/contacts/all` o emails (pomalejší — 1180 × 2 calls = ~3 min, asi delší timeout než 240s) → smazat starý dataset přes `DELETE WHERE ingested_at < '2026-04-26 19:06:00'` → znovu ingest. Plus zachovat existing telefony nějak. |
-| **H2** | **D5+: Threading TG flow callbacks** | ~2–3 h | Endpointy ready (`/of/task/{id}` + `/append_note`). Chybí: (a) detekce v `notify_emails.py` že email je v threadu s existing `of_task_id` → speciální TG zpráva s tlačítky [📂 Otevřít OF / 📎 Append do notes / ➕ Nový task / ⏭ Skip], (b) handlery v `telegram_callback.py` pro nové action: `of_open` (TG odpověď s `omnifocus:///task/<id>` URL), `of_append` (POST /append_note s body subject + sender + krátký excerpt). |
-| **H3** | **D2 action wiring decision_rules flagů** | ~1 h | Aktuálně `is_personal`, `force_tg_notify`, `no_auto_action`, `no_auto_konstruktivni` z decision engine se ukládají do decision dict ale **nikde se nepoužívají**. Musí: (a) `is_personal=true` → blokovat auto-konstruktivní akce (2of/2cal/2note/2rem) v `notify_emails`, (b) `force_tg_notify=true` (VIP) → vždy poslat TG i s vysokým confidence, (c) `no_auto_action=true` → blokovat všechny auto akce v `classify_emails.py` (auto-spam threshold check). |
+| # | Co | Status |
+|---|---|---|
+| ~~H1~~ | ~~BUG-009 group matching~~ | **✅ FIXED commit `6b43643`** — JXA emails+phones, 512 s email∩groups |
+| ~~H2~~ | ~~D5+ Threading TG flow~~ | **✅ DONE commit `e37f576`** — Bridge task_id, of_open/of_append/of_new handlery, thread JOIN detection |
+| ~~H3~~ | ~~D2 action wiring decision flagů~~ | **✅ DONE commit `394ec5e`** — sql/015_decision_flags.sql, persist + visual indikátory + no_auto_action wire |
+| ~~BUG-011~~ | ~~Case-insensitive email match~~ | **✅ FIXED commit `af5df96`** — JSONB array_elements + LOWER() |
 
 ### 🐒 MEDIUM
 
@@ -274,16 +302,22 @@ SELECT g, count(*) FROM (
 
 ---
 
-## První krok zítra
+## První krok příští session
 
-Doporučuju **H1 (group matching)** první — odblokuje rules pro VIP/osobní → odhalí kolik emailů by reálně dostalo flag is_personal. Postup:
+H1/H2/H3 jsou hotové. Doporučení dle náročnosti × přínos:
 
-1. SSH na Apple Studio → ověřit `/health` Bridge
-2. Edit `services/apple-bridge/main.py` — `/contacts/all` JXA: rozšířit per-kontakt loop o `p.emails()` a `p.phones()` (timeout zvýšit na 600s)
-3. Lokální syntax check → scp → launchctl reload
-4. Smaž starý dataset: `DELETE FROM apple_contacts WHERE ingested_at < '2026-04-26 19:06:00'`
-5. Trigger ingest: `docker exec -w /app brogiasist-scheduler python3 -c 'from ingest_apple_apps import ingest_contacts; ingest_contacts()'`
-6. Verifikace: `SELECT count(*) FROM apple_contacts WHERE jsonb_array_length(emails) > 0 AND jsonb_array_length(groups) > 0;` (musí > 0)
-7. Spustit decision engine standalone test (script `decision_test.py` v `/tmp/`) — `group_vip` a `sender_personal` by měly začít matchnout
+**Možnost A — M3 (STATUS kolečko, 30 min, vychytá UX):**
+- `services/dashboard/templates/index.html` — Jinja mapping interní `status` ('new'/'classified'/'reviewed') → 'novy'/'novy'/'zpracovany' a render `<span class="status-circle status-{...}">⏺</span>` před `from_address` v email tabulce. CSS classes `.status-circle .status-{novy,precteny,cekajici,zpracovany,smazany}` jsou ready z D4.
 
-Po tomto je Pavel ready otestovat klasifikaci v reálu — poslat si email od kontaktu z osobní skupiny → uvidí v dashboardu/TG, že systém ho označí jako personal.
+**Možnost B — M1 (mail/send + calendar/reply, 3 h):**
+- Vyžaduje rozhodnutí o headers — viz BUG-010 (4 workaroundy: subject marker / Reply-To / body footer / direct SMTP). **Pavel musí rozhodnout PŘED implementací.**
+
+**Možnost C — M2 (2undo akce, 1 h):**
+- SQL migrace + handler v telegram_callback. TTL 1h check.
+
+**Možnost D — H2 end-to-end test:**
+- Pavel klikne 2of na nějaký nový email → ověř že `of_task_id` se uložil v DB.
+- Když přijde reply na ten thread → ověř že přijde 🧵 zpráva s 4 buttony.
+- Smaž OF testovací task `[brogi-test H2] Smoke task_id` (id `c_7fTaZfrTO`).
+
+Doporučuju **A → D → potom rozhodnutí o B nebo C** podle priority Pavla.

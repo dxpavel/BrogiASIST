@@ -101,8 +101,19 @@ chroma_client.store_email_action → ChromaDB collection "email_actions"
 | `unsubscribe_url` | TEXT | URL pro odhlášení (z hlavičky List-Unsubscribe) |
 | `tg_notified_at` | TIMESTAMPTZ | kdy odeslána TG notifikace (NULL = ještě ne) |
 | `tg_message_id` | INTEGER | ID TG zprávy s tlačítky — pro pozdější `delete_message` po akci |
+| `message_id` | VARCHAR(998) | RFC 5322 Message-ID hlavička (migrace 014, pro threading) |
+| `in_reply_to` | VARCHAR(998) | RFC In-Reply-To hlavička (migrace 014, parent reference) |
+| `thread_id` | UUID | ID threadu (migrace 014, JOIN přes Message-ID/In-Reply-To) |
+| `of_task_id` | VARCHAR(128) | OmniFocus task.id() po `2of` akci (migrace 014, **používá se od H2 commit `e37f576`** pro thread continuation detection) |
+| `of_linked_at` | TIMESTAMPTZ | kdy linkováno na OF task |
+| `is_personal` | BOOLEAN | flag z decision_engine (migrace 014, sender_personal rule match) |
+| `force_tg_notify` | BOOLEAN | VIP rule flag (migrace 015) — vždy posílat TG notifikaci |
+| `no_auto_action` | BOOLEAN | (migrace 015) skip auto-spam-trash i při high confidence — Pavel rozhodne |
+| `no_auto_konstruktivni` | BOOLEAN | (migrace 015) gating pro budoucí silent auto-apply (2of/2cal/2note/2rem) |
+| `matched_rules` | TEXT[] | (migrace 015) audit: která decision_rules pravidla matchla |
+| `matched_groups` | TEXT[] | (migrace 015) Apple Contacts skupiny odesílatele (z group rules) |
 
-Indexy: `status`, `mailbox`, `sent_at DESC`, `from_address`, `is_spam`, `firma`, `typ`
+Indexy: `status`, `mailbox`, `sent_at DESC`, `from_address`, `is_spam`, `firma`, `typ`, partial `message_id WHERE NOT NULL`, `thread_id WHERE NOT NULL`, `of_task_id WHERE NOT NULL`, `is_personal WHERE TRUE`, `force_tg_notify WHERE TRUE`
 
 ---
 
