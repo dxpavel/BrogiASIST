@@ -16,7 +16,14 @@ log = logging.getLogger(__name__)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
 MODEL = "llama3.2-vision:11b"
-SPAM_AUTO_THRESHOLD = 0.92  # nad tímto skórem označíme spam automaticky
+# Auto-spam je dočasně VYPNUTÝ (2026-04-27, threshold > 1.0 = nikdy true).
+# Důvod: race condition — log produkoval `SPAM (auto trash, 100%)` ale zároveň
+# v stejném tiku `Klasifikováno: typ=ÚKOL spam=false` (case: krouzecka@volny.cz,
+# email 139b0c88, dane 2025 od účetní). Email byl auto-přesunut do Trash
+# přes IMAP, ale finální DB rozhodnutí bylo spam=false → nesoulad.
+# Dokud root cause nenajdeme, ZADNY auto-spam — Pavel klikne 2spam/2del ručně
+# na TG. Učení v Chromě email_actions dál funguje, jen bez auto-execute.
+SPAM_AUTO_THRESHOLD = 2.0
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = "claude-haiku-4-5"  # rychlý+levný pro verifikaci spamu
 
