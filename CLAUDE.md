@@ -357,6 +357,12 @@ Scope: typicky modul (`scheduler`, `apple-bridge`, `dashboard`, `ingest`, `D5`, 
 - `properties()` batch + `try/catch` per záznam
 - Detail: lessons sekce 37
 
+### `Auto-Submitted: auto-generated` ≠ bounce (decision_rules trap)
+- **Mají ho VŠECHNY** systémové notifikace (MantisBT issue updates, GitHub alerty, monitoring, cron jobs)
+- **Skutečný bounce/DSN** se pozná podle `Content-Type: multipart/report` (RFC 3464)
+- Pravidlo `header_bounce` v decision_rules → matchuje `Content-Type contains "multipart/report"`, NE `Auto-Submitted` (oprava 2026-04-27, MantisBT HOSPODARY ticket falešně dostal TYP=ERROR)
+- Detail: incident `e55ecb66-...` v `email_messages`, fix v sql/013 + DB update
+
 ### IMAP transient errors (neblokující)
 - `[Errno -3] Try again` (DNS z kontejneru)
 - `EOF in violation of protocol`

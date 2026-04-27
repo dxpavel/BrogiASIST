@@ -55,9 +55,9 @@ INSERT INTO decision_rules (priority, rule_name, condition_type, condition_value
    'Out-of-office auto-reply → TYP=INFO, žádná akce'),
 
   (40, 'header_bounce',
-   'header', '{"header":"Auto-Submitted","operator":"equals","value":"auto-generated"}'::jsonb,
+   'header', '{"header":"Content-Type","operator":"contains","value":"multipart/report"}'::jsonb,
    'end',    '{"typ":"ERROR"}'::jsonb,
-   'Bounce / DSN (delivery status notification) → TYP=ERROR'),
+   'Bounce / DSN (RFC 3464 multipart/report) → TYP=ERROR. POZOR: Auto-Submitted: auto-generated NESTAČÍ, mají to i MantisBT/GitHub/monitoring notifikace.'),
 
   (50, 'group_vip',
    'group',  '{"groups":["VIP ⏰"]}'::jsonb,
