@@ -439,8 +439,24 @@ async def ukoly(request: Request):
                    "from_address": r[2] or "", "subject": r[3] or "(bez předmětu)",
                    "typ": r[4], "firma": r[5] or "",
                    "confidence": f"{int((r[6] or 0)*100)}%",
-                   "sent_at": r[7], "notified": r[8] is not None} for r in cur.fetchall()]
+                   "sent_at": r[7], "notified": r[8] is not None,
+                   "suggested": None} for r in cur.fetchall()]
         conn.close()
+
+        # Chroma predikce per email (batch call do ingest API).
+        # Pokud selže nebo timeout, prostě bez návrhů — UI funguje dál.
+        if emails:
+            try:
+                ids = [e["id"] for e in emails]
+                r = httpx.post(f"{INGEST_URL}/emails/suggested",
+                               json={"ids": ids}, timeout=10)
+                if r.status_code == 200:
+                    sug_map = r.json() or {}
+                    for e in emails:
+                        e["suggested"] = sug_map.get(e["id"])
+            except Exception as _se:
+                import logging as _log
+                _log.getLogger("ukoly").warning(f"emails/suggested fail: {_se}")
     except Exception as _e:
         import logging as _log
         _log.getLogger("ukoly").error(f"Ukoly route chyba: {_e}")
