@@ -739,10 +739,11 @@ def contacts_all():
     Při prvním volání macOS vyhodí dialog "Apple Bridge requests Contacts
     access" — uživatel klikne Allow → funguje dál bez ptaní.
     """
-    # Optimalizovaný JXA — minimum bridge calls per kontakt.
-    # Skupiny first (rychlé, ~19 skupin × people()), pak kontakty
-    # bez emails/phones (ty stejně máme z dřívějších sqlite ingestů
-    # v PostgreSQL, JXA je dotahuje pomalu).
+    # JXA — skupiny + per-kontakt emails/phones (label+value).
+    # Per-kontakt JXA call ~187 ms × 1180 kontaktů ≈ 230 s + overhead.
+    # Timeout 600 s = ~2.6× rezerva.
+    # Důvod načítat emails/phones zde (a ne nechávat na sqlite ingest):
+    # launchd-spawned Bridge nemá Full Disk Access → sqlite read padá.
     script = r'''
 const contacts = Application('Contacts');
 contacts.includeStandardAdditions = false;
@@ -763,33 +764,47 @@ for (let i = 0; i < groups.length; i++) {
     }
 }
 
+function safeList(getter) {
+    let arr = [];
+    try { arr = getter(); } catch (e) { return []; }
+    const out = [];
+    for (let k = 0; k < arr.length; k++) {
+        const item = arr[k];
+        let lbl = null, val = null;
+        try { lbl = item.label() || null; } catch (e) {}
+        try { val = item.value() || null; } catch (e) {}
+        if (val) out.push({label: lbl, value: val});
+    }
+    return out;
+}
+
 const result = [];
 const people = contacts.people();
 for (let i = 0; i < people.length; i++) {
     const p = people[i];
     let pid;
     try { pid = p.id(); } catch (e) { continue; }
-    try {
-        result.push({
-            id: pid,
-            first: p.firstName() || null,
-            last: p.lastName() || null,
-            org: p.organization() || null,
-            modified_at: null,
-            emails: [],
-            phones: [],
-            groups: groupMap[pid] || [],
-        });
-    } catch (e) {
-        result.push({id: pid, first: null, last: null, org: null,
-                     modified_at: null, emails: [], phones: [],
-                     groups: groupMap[pid] || []});
-    }
+    let first = null, last = null, org = null;
+    try { first = p.firstName() || null; } catch (e) {}
+    try { last = p.lastName() || null; } catch (e) {}
+    try { org = p.organization() || null; } catch (e) {}
+    const emails = safeList(() => p.emails());
+    const phones = safeList(() => p.phones());
+    result.push({
+        id: pid,
+        first: first,
+        last: last,
+        org: org,
+        modified_at: null,
+        emails: emails,
+        phones: phones,
+        groups: groupMap[pid] || [],
+    });
 }
 JSON.stringify(result);
 '''
     try:
-        contacts_data = run_jxa(script, timeout=240)
+        contacts_data = run_jxa(script, timeout=600)
         if not isinstance(contacts_data, list):
             return JSONResponse({
                 "ok": False, "error": "jxa_unexpected_type",
