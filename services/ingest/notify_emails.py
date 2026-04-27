@@ -49,8 +49,9 @@ def _buttons_for_typ(typ: str, email_id: str, has_unsubscribe: bool = False) -> 
              _btn("📥 2of",     "of",     eid),
              _btn("⏰ 2rem",    "rem",    eid)],
             [_btn("📝 2note",   "note",   eid),
-             _btn("⏭ 2skip",   "skip",   eid),
-             _btn("🗑 2spam",   "spam",   eid)],
+             _btn("⏭ 2skip",   "skip",   eid)],
+            [_btn("🗑 2del",    "del",    eid),
+             _btn("🚫 2spam",   "spam",   eid)],
         ]
     if typ == "DOKLAD" or typ == "FAKTURA":  # legacy fallback
         return [
@@ -58,45 +59,58 @@ def _buttons_for_typ(typ: str, email_id: str, has_unsubscribe: bool = False) -> 
              _btn("📝 2note",   "note",   eid)],
             [_btn("✅ 2hotovo", "hotovo", eid),
              _btn("⏭ 2skip",   "skip",   eid)],
+            [_btn("🗑 2del",    "del",    eid),
+             _btn("🚫 2spam",   "spam",   eid)],
         ]
     if typ == "NABÍDKA":
         return [
             [_btn("📝 2note",   "note",   eid),
              _btn("🚫 2unsub",  "unsub",  eid)],
-            [_btn("🗑 2spam",   "spam",   eid),
-             _btn("⏭ 2skip",   "skip",   eid)],
+            [_btn("⏭ 2skip",   "skip",   eid),
+             _btn("🗑 2del",    "del",    eid),
+             _btn("🚫 2spam",   "spam",   eid)],
         ]
     if typ == "NOTIFIKACE" or typ == "POTVRZENÍ":
         return [
             [_btn("✅ 2hotovo", "hotovo", eid),
-             _btn("⏭ 2skip",   "skip",   eid),
-             _btn("🗑 2spam",   "spam",   eid)],
+             _btn("⏭ 2skip",   "skip",   eid)],
+            [_btn("🗑 2del",    "del",    eid),
+             _btn("🚫 2spam",   "spam",   eid)],
         ]
     if typ == "POZVÁNKA":
         # TODO blocker D3: '📅 2cal+Accept' a '❌ Decline' tlačítka —
         # vyžadují Apple Bridge POST /calendar/reply endpoint pro odeslání
         # Accept/Decline replies pozvateli (přes Mail.app AppleScript).
-        # Zatím jen 2cal (vytvoří event) + skip/spam.
+        # Zatím jen 2cal (vytvoří event) + skip/del/spam.
         return [
             [_btn("📅 2cal",   "cal",  eid),
-             _btn("⏭ 2skip",  "skip", eid),
-             _btn("🗑 2spam",  "spam", eid)],
+             _btn("⏭ 2skip",  "skip", eid)],
+            [_btn("🗑 2del",   "del",  eid),
+             _btn("🚫 2spam",  "spam", eid)],
         ]
     if typ == "INFO" or typ == "NEWSLETTER":
-        row = [_btn("✅ 2hotovo", "hotovo", eid),
-               _btn("⏭ 2skip",   "skip",   eid)]
+        row1 = [_btn("✅ 2hotovo", "hotovo", eid),
+                _btn("⏭ 2skip",   "skip",   eid)]
         if has_unsubscribe:
-            row.append(_btn("🚫 2unsub", "unsub", eid))
-        return [row]
+            row1.append(_btn("🚫 2unsub", "unsub", eid))
+        return [
+            row1,
+            [_btn("🗑 2del",  "del",  eid),
+             _btn("🚫 2spam", "spam", eid)],
+        ]
     if typ == "ERROR":
         return [
             [_btn("✅ 2hotovo", "hotovo", eid),
              _btn("⏭ 2skip",   "skip",   eid)],
+            [_btn("🗑 2del",    "del",    eid),
+             _btn("🚫 2spam",   "spam",   eid)],
         ]
     if typ == "ENCRYPTED":
         return [
             [_btn("👁 Otevřu sám", "precteno", eid),
              _btn("⏭ 2skip",      "skip",     eid)],
+            [_btn("🗑 2del",       "del",      eid),
+             _btn("🚫 2spam",      "spam",     eid)],
         ]
 
     # Unknown TYP — fallback "univerzal"
@@ -104,7 +118,8 @@ def _buttons_for_typ(typ: str, email_id: str, has_unsubscribe: bool = False) -> 
         [_btn("📥 2of", "of", eid), _btn("⏰ 2rem", "rem", eid),
          _btn("📅 2cal", "cal", eid), _btn("📝 2note", "note", eid)],
         [_btn("✅ 2hotovo", "hotovo", eid), _btn("⏭ 2skip", "skip", eid),
-         _btn("🗑 2spam", "spam", eid), _btn("🚫 2unsub", "unsub", eid)],
+         _btn("🚫 2unsub", "unsub", eid)],
+        [_btn("🗑 2del", "del", eid), _btn("🚫 2spam", "spam", eid)],
     ]
 
 
@@ -143,7 +158,8 @@ def notify_classified_emails():
             _email_action(str(email_id), repeat_action)
             action_label = {
                 "of": "OF", "rem": "Reminder", "note": "Note",
-                "hotovo": "Hotovo", "spam": "Spam", "precteno": "Přečteno",
+                "hotovo": "Hotovo", "spam": "Spam", "del": "Smazáno",
+                "precteno": "Přečteno",
             }.get(repeat_action, repeat_action)
             send(
                 f"🔁 <b>Opakuji akci: {action_label}</b>\n"

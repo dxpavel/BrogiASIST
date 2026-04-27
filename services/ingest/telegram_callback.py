@@ -294,6 +294,18 @@ def _email_action(email_id: str, action: str):
         from_addr = _get_email_from(email_id)
         _mark_spam(email_id, True, from_addr)
         imap_op = ("trash",)
+    elif action == "del":
+        # Jednorázové smazání bez učení sender=spam.
+        # is_spam zůstává FALSE, classification_rules se NEpíše — Chroma
+        # email_actions log (níž v _email_action) ale akci uloží, takže
+        # find_repeat_action může 2del navrhnout pro podobný vzor příště.
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute(
+            "UPDATE email_messages SET human_reviewed=TRUE, status='reviewed' WHERE id=%s",
+            (email_id,)
+        )
+        conn.commit(); cur.close(); conn.close()
+        imap_op = ("trash",)
     elif action == "of":
         conn = get_conn(); cur = conn.cursor()
         cur.execute("SELECT subject, from_address, body_text FROM email_messages WHERE id=%s", (email_id,))
@@ -459,7 +471,8 @@ ACTION_LABEL = {
     "hotovo":   "✅ Označeno jako hotovo",
     "precteno": "👁️ Označeno jako přečteno",
     "ceka":     "⏳ Čeká na mě",
-    "spam":     "🗑️ Označeno jako SPAM",
+    "spam":     "🚫 Označeno jako SPAM",
+    "del":      "🗑️ Smazáno",
     "of":       "📋 Přidáno do OmniFocus",
     "rem":      "⏰ Přidáno do Reminders",
     "note":     "📝 Uloženo do Notes",

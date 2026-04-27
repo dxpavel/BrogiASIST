@@ -297,6 +297,7 @@ ssh dxpavel@10.55.2.117 "launchctl list | grep brogi && curl -sm 5 http://localh
 | 2026-04-26 | **Existující 25 emailů a 2360 kontaktů NEMIGRUJEME** — staré v starém formátu, nové v novém | Vývoj, nemá smysl rozkopávat historii |
 | 2026-04-26 | Apple Contacts ingest **12 h** (ne 6 h) + hash check | Stačí 2× denně, 99% DB writes ušetřeno |
 | 2026-04-26 | BUG-008 fix přes **`os.posix_spawn()`** (NE `OBJC_DISABLE_INITIALIZE_FORK_SAFETY` — na macOS 26.4 nefunguje) | macOS multi-threaded fork bug |
+| 2026-04-27 | **Přidána ACTION `2del`** (univerzální „rychle smazat") — Trash + Chroma log, **NE**zapisuje `classification_rules` (sender se neoznačí jako spam). Tlačítko ve **všech** TYPech (var. C). 8 → 9 ACTIONs. | Pro duplicity / šum, kdy 2spam by zbytečně označil odesílatele jako spam pro budoucnost. Učení dál funguje přes Chroma `email_actions` (find_repeat_action). |
 
 ---
 
@@ -404,8 +405,13 @@ Scope: typicky modul (`scheduler`, `apple-bridge`, `dashboard`, `ingest`, `D5`, 
 **STATUS** (životní cyklus):
 NOVÝ · PŘEČTENÝ · ČEKAJÍCÍ · ZPRACOVANÝ · SMAZANÝ
 
-**ACTION** (malými, prefix `2` = „to"):
-2of · 2rem · 2cal · 2note · 2hotovo · 2spam · 2unsub · 2skip + 2undo (TTL 1h)
+**ACTION** (9 hodnot, malými, prefix `2` = „to"):
+2of · 2rem · 2cal · 2note · 2hotovo · **2del** · 2spam · 2unsub · 2skip + 2undo (TTL 1h)
+
+> **2del vs 2spam** (přidáno 2026-04-27):
+> - `2del` = jednorázové smazání (Trash + Chroma log). Sender se NEoznačí jako spam.
+> - `2spam` = smazání + zápis do `classification_rules` → další maily od sendera jdou auto-spam.
+> Použij `2del` pro duplicity / šum, `2spam` pro skutečné spammery.
 
 **Decision flow:**
 header check → skupina BLOCKED ignoruj → VIP / personal flagy → Chroma vzor → Llama AI
@@ -425,6 +431,7 @@ header check → skupina BLOCKED ignoruj → VIP / personal flagy → Chroma vzo
 | Datum | Verze | Změna |
 |---|---|---|
 | 2026-04-26 | 1.0 | Vytvořeno — autoritativní pravda po release v2 work day |
+| 2026-04-27 | 1.1 | Přidána ACTION `2del` (var. C — ve všech TYPech). Update sekce 9 (rozhodnutí), sekce 14 (sumár) — 8 → 9 ACTIONs. |
 
 > **Edituj tento soubor kdykoli se změní realita** (PROD migrace, nové branch konvence,
 > nové bugy, přejmenování, nové infrastructure...). Commit + push, příští session

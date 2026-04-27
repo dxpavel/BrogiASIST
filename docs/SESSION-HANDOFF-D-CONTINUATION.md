@@ -51,7 +51,7 @@ Pavel má Asperger + ADHD:
 
 ### 2. Email Semantics v1 — **finální spec**
 - `docs/brogiasist-semantics-v1.md` (660 řádků, 20 sekcí) — TYP/STATUS/ACTION semantika, Mermaid diagram, 19 skupin kontaktů, decision rules, threading, failure handling, grafická specifikace (kostičky/fill/kazeťák), TG tlačítka per TYP
-- Pavel jí schválil: **9 TYPů (ÚKOL, DOKLAD, NABÍDKA, NOTIFIKACE, POZVÁNKA, INFO, ERROR, LIST, ENCRYPTED)**, **5 STATUS** (NOVÝ/PŘEČTENÝ/ČEKAJÍCÍ/ZPRACOVANÝ/SMAZANÝ), **8 ACTION + 2undo** (prefix `2` = „to")
+- Pavel jí schválil: **9 TYPů (ÚKOL, DOKLAD, NABÍDKA, NOTIFIKACE, POZVÁNKA, INFO, ERROR, LIST, ENCRYPTED)**, **5 STATUS** (NOVÝ/PŘEČTENÝ/ČEKAJÍCÍ/ZPRACOVANÝ/SMAZANÝ), **9 ACTION + 2undo** (prefix `2` = „to") — *2026-04-27: rozšířeno z 8 na 9 přidáním `2del` (univerzální „rychle smazat" bez učení sender=spam)*
 - Skupiny kontaktů (z Apple Contacts, 19 skupin) jako orthogonal signál pro klasifikaci
 
 ### 3. BUG-008 — Apple Bridge fork() crash (HIGH)
@@ -100,7 +100,8 @@ Pavel má Asperger + ADHD:
 - `classify_emails.py` — Llama prompt nové TYPy (6 hodnot: ÚKOL/DOKLAD/NABÍDKA/NOTIFIKACE/POZVÁNKA/INFO; ERROR/LIST/ENCRYPTED detekuje engine PŘED Llamou)
 - Body 400 → 500 znaků per spec M5
 - `notify_emails.py` — nová funkce `_buttons_for_typ(typ, email_id, has_unsubscribe)` per spec sekce 7
-- Per-TYP tlačítka: ÚKOL=2hotovo/2of/2rem/2note/2skip/2spam, DOKLAD=2of/2note/2hotovo/2skip, NABÍDKA=2note/2unsub/2spam/2skip, NOTIFIKACE=2hotovo/2skip/2spam, POZVÁNKA=2cal/2skip/2spam (2cal+Accept TODO v D3+), INFO=2hotovo/2skip+2unsub, ERROR=2hotovo/2skip, ENCRYPTED=Otevřu sám/2skip, LIST=skip TG (auto-2hotovo)
+- Per-TYP tlačítka: ÚKOL=2hotovo/2of/2rem/2note/2skip/**2del**/2spam, DOKLAD=2of/2note/2hotovo/2skip/**2del**/2spam, NABÍDKA=2note/2unsub/2skip/**2del**/2spam, NOTIFIKACE=2hotovo/2skip/**2del**/2spam, POZVÁNKA=2cal/2skip/**2del**/2spam (2cal+Accept TODO v D3+), INFO=2hotovo/2skip+2unsub/**2del**/2spam, ERROR=2hotovo/2skip/**2del**/2spam, ENCRYPTED=Otevřu sám/2skip/**2del**/2spam, LIST=skip TG (auto-2hotovo)
+- `2del` (přidáno 2026-04-27, var. C) je **ve všech TYPech** — univerzální „rychlé smazání" pro duplicity/šum bez označení sendera jako spam
 - Callback_data zachován jako `email:<action>:<id>` (backward compat), UI text používá „2of" notaci
 
 ### 9. Blocker D3 (částečně, 4/6 endpointů, commits `5ceb3d8` + `110883e`)

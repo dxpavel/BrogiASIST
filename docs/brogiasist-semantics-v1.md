@@ -65,7 +65,7 @@ Klasifikuje **obsah** emailu, ne odesílatele. Jedna hodnota per email.
 
 ---
 
-## 3. ACTION (8 hodnot, malými písmeny, prefix `2` = „to")
+## 3. ACTION (9 hodnot, malými písmeny, prefix `2` = „to")
 
 Sémantika: `2` jako **„to"** (foneticky / anglicky) — kam to přesměrujeme. Jedna ACTION per kliknutí.
 
@@ -76,7 +76,8 @@ Sémantika: `2` jako **„to"** (foneticky / anglicky) — kam to přesměrujeme
 | `2cal` | Pokud `.ics` → spolehlivý parse (priorita), jinak text-parse → Apple Calendar event. **Volitelně Accept reply** (TG potvrzení). | ZPRACOVANÝ | `BrogiASIST/HOTOVO` |
 | `2note` | Předá text do **Apple Notes** (žádný termín). | ZPRACOVANÝ | `BrogiASIST/HOTOVO` |
 | `2hotovo` | Označí jako vyřízené, žádná systémová akce. | ZPRACOVANÝ | `BrogiASIST/HOTOVO` (DOKLADY pro DOKLAD, NABIDKY pro NABÍDKA) |
-| `2spam` | Smazání + zápis do Chroma `email_actions`. **Volitelně Decline reply** pro POZVÁNKA. | SMAZANÝ | `Trash` (IMAP nativní) |
+| `2del` | **Jednorázové smazání** (duplicity, šum). Zápis do Chroma `email_actions`. **NE**zapisuje `classification_rules` — sender se neoznačí jako spam. | SMAZANÝ | `Trash` (IMAP nativní) |
+| `2spam` | Smazání + `classification_rules` (sender → další maily auto-spam) + Chroma `email_actions`. **Volitelně Decline reply** pro POZVÁNKA. | SMAZANÝ | `Trash` (IMAP nativní) |
 | `2unsub` | 1) `List-Unsubscribe` header (RFC, preferovaně). 2) Fallback link v textu. | ZPRACOVANÝ | `BrogiASIST/HOTOVO` |
 | `2skip` | Nechá v inboxu, žádná akce, jen flag „musím se zamyslet". | ČEKAJÍCÍ | (zůstává v INBOX) |
 
@@ -282,15 +283,19 @@ CREATE INDEX idx_pending_status ON pending_actions(status, created_at);
 
 | TYP | Tlačítka v TG zprávě |
 |---|---|
-| `ÚKOL` | `✅ 2hotovo` · `📥 2of` · `⏰ 2rem` · `📝 2note` · `⏭ 2skip` · `🗑 2spam` |
-| `DOKLAD` | `📥 2of` (zaplatit) · `📝 2note` · `✅ 2hotovo` · `⏭ 2skip` |
-| `NABÍDKA` | `📝 2note` · `🚫 2unsub` · `🗑 2spam` · `⏭ 2skip` |
-| `NOTIFIKACE` | `✅ 2hotovo` · `⏭ 2skip` · `🗑 2spam` |
-| `POZVÁNKA` | `📅 2cal + Accept reply` · `📅 2cal jen` · `❌ Decline reply` · `⏭ 2skip` |
-| `INFO` | `✅ 2hotovo` · `⏭ 2skip` · `🚫 2unsub` (jen pokud má List-Unsubscribe) |
-| `ERROR` | `✅ 2hotovo` · `⏭ 2skip` |
+| `ÚKOL` | `✅ 2hotovo` · `📥 2of` · `⏰ 2rem` · `📝 2note` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
+| `DOKLAD` | `📥 2of` (zaplatit) · `📝 2note` · `✅ 2hotovo` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
+| `NABÍDKA` | `📝 2note` · `🚫 2unsub` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
+| `NOTIFIKACE` | `✅ 2hotovo` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
+| `POZVÁNKA` | `📅 2cal + Accept reply` · `📅 2cal jen` · `❌ Decline reply` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
+| `INFO` | `✅ 2hotovo` · `⏭ 2skip` · `🚫 2unsub` (jen pokud má List-Unsubscribe) · `🗑 2del` · `🚫 2spam` |
+| `ERROR` | `✅ 2hotovo` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
 | `LIST` | (žádná TG zpráva, auto-2hotovo) |
-| `ENCRYPTED` | `👁 Otevřu sám` · `⏭ 2skip` |
+| `ENCRYPTED` | `👁 Otevřu sám` · `⏭ 2skip` · `🗑 2del` · `🚫 2spam` |
+
+> `2del` = univerzální „rychle smazat" tlačítko (duplicity, šum). Pošta jde do `Trash`,
+> akce se učí v Chromě (příště podobný vzor → návrh 2del), ale sender se **NE**označuje
+> jako spam — žádné auto-spam pro další maily od něj. Pro to slouží `2spam`.
 
 ### Threading TG flow
 
@@ -344,7 +349,7 @@ Pokud nový email v existujícím threadu, kde už je `of_task_id` set:
 | Akce | Chování |
 |---|---|
 | `2of`, `2cal`, `2note`, `2rem` | Zapsat do `pending_actions`, status=pending |
-| `2spam`, `2unsub`, `2hotovo`, `2skip` | Běží normálně (nepotřebují Apple Bridge) |
+| `2del`, `2spam`, `2unsub`, `2hotovo`, `2skip` | Běží normálně (nepotřebují Apple Bridge) |
 | Ingest, klasifikace, AI learning | Pokračuje normálně |
 | TG notifikace | Bot pošle zprávu „⚠️ Apple Studio offline — akce uložena do fronty (#42 v queue)" |
 

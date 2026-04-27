@@ -220,7 +220,7 @@ pkill -f apple-bridge
 2. **Skupina** (priority 50, 70) — group_vip, sender_personal *(BUG-009 disjoint data)*
 3. **Chroma vzor** (priority 60) — cosine < 0.15 → apply_remembered_action
 4. **AI fallback** (priority 80) — Llama klasifikace
-5. **Auto-action threshold:** spam ≥ 92 %, konstruktivní ≥ 85 %, manuální 2unsub/2hotovo/2skip
+5. **Auto-action threshold:** spam ≥ 92 %, konstruktivní ≥ 85 %, manuální 2unsub/2hotovo/2skip/2del
 
 **Decision rules engine:** `services/ingest/decision_engine.py`, tabulka `decision_rules` (9 default pravidel)
 
@@ -242,7 +242,7 @@ pkill -f apple-bridge
 | precteno + NEWSLETTER | BrogiASIST/NEWSLETTER |
 | precteno + ESHOP | BrogiASIST/ESHOP |
 | ceka | BrogiASIST/CEKA |
-| spam / unsub | Trash (dle providera) |
+| spam / del / unsub | Trash (dle providera) |
 
 ### Trash složky dle IMAP hostu
 | Host | Trash folder |
@@ -293,6 +293,7 @@ docker exec brogi_scheduler python backfill_mark_read.py
 | 2026-04-25 | Docker: scheduler nemá bind mount — změny kódu vyžadují `docker cp` + restart nebo rebuild image |
 | 2026-04-26 | **PROD migrace na VM 103** (Proxmox) + Apple Bridge na Apple Studio |
 | 2026-04-26 | **Email Semantics v1 spec** schválena — 9 TYPů, 5 STATUS, 8 ACTION + 2undo, prefix `2` = „to" (`docs/brogiasist-semantics-v1.md`) |
+| 2026-04-27 | **Přidána ACTION `2del`** (univerzální „rychle smazat" tlačítko) — Trash + Chroma log, ALE žádný zápis do `classification_rules` (sender se neoznačí jako spam). Pro duplicity / šum, kdy 2spam by zbytečně označil odesílatele. Tlačítko ve **všech** TYPech (var. C). Nyní 9 ACTION + 2undo. |
 | 2026-04-26 | **BUG-008 Apple Bridge fork() crash FIXED** — `os.posix_spawn()` místo `subprocess.run()` (workaround #1 OBJC env var na macOS 26.4 nefunguje) |
 | 2026-04-26 | **Branch `2` rozjeta** — implementace v2: A (RFC headers), B (Apple Contacts groups), C (decision_rules engine), D1 (schema + threading), D2 (Llama prompt + per-TYP TG tlačítka), D4 (CLS fix + grafická spec), D5 (queue worker), D3 (4/6 endpointů) |
 | 2026-04-26 | Tag `v1.1` (commit `ee483ba`) — bod návratu před implementací v2 |
