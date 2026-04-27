@@ -110,7 +110,8 @@ def notify_classified_emails():
     cur = conn.cursor()
     cur.execute("""
         SELECT id, mailbox, from_address, subject, typ, firma, ai_confidence, body_text,
-               raw_payload->'headers'->>'List-Unsubscribe' AS list_unsub
+               raw_payload->'headers'->>'List-Unsubscribe' AS list_unsub,
+               is_personal, force_tg_notify, matched_groups
         FROM email_messages
         WHERE typ IS NOT NULL
           AND is_spam = FALSE
@@ -122,7 +123,8 @@ def notify_classified_emails():
     """)
     rows = cur.fetchall()
 
-    for email_id, mailbox, from_addr, subject, typ, firma, confidence, body, list_unsub in rows:
+    for (email_id, mailbox, from_addr, subject, typ, firma, confidence, body, list_unsub,
+         is_personal, force_tg_notify, matched_groups) in rows:
         icon = TYP_ICON.get(typ, "📧")
         conf_str = f"{int((confidence or 0)*100)}%" if confidence else "?"
         short_from = from_addr.split("<")[-1].rstrip(">") if "<" in (from_addr or "") else (from_addr or "?")
@@ -141,13 +143,19 @@ def notify_classified_emails():
             suggested = {"action": sug_action, "confidence_pct": pct}
             log.info(f"chroma suggest: action={sug_action} {match_count}/{total} ({pct}%) email_id={email_id}")
 
+        # H3: VIP prefix + personal/group indikátory
+        personal_mark = " 👤" if is_personal else ""
+        prefix = "⭐ <b>VIP</b> ⭐\n" if force_tg_notify else ""
         text = (
+            f"{prefix}"
             f"{icon} <b>{escape(typ)}</b>  <code>{escape(mb)}</code>  <i>{conf_str}</i>\n"
-            f"Od: <code>{escape(short_from)}</code>\n"
+            f"Od: <code>{escape(short_from)}</code>{personal_mark}\n"
             f"Předmět: {escape(subject or '(bez předmětu)')}"
         )
         if firma:
             text += f"\nFirma: <b>{escape(firma)}</b>"
+        if matched_groups:
+            text += f"\n<i>👥 {escape(', '.join(matched_groups))}</i>"
         if suggested:
             text += f"\n<i>🔁 Z minulosti: tento vzor → {_ACTION_2X.get(suggested['action'], suggested['action'])} ({suggested['confidence_pct']}%)</i>"
 

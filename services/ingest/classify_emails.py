@@ -273,6 +273,7 @@ def classify_new_emails(limit: int = 20):
             if decision.get("end_pipeline") and decision.get("typ"):
                 rule_typ = decision["typ"]
                 _save_classification(email_id, firma, rule_typ, None, False, 1.0)
+                _save_decision_flags(email_id, decision)
                 log.info(f"Decision: TYP={rule_typ} via rules={decision.get('matched_rules')}")
                 continue
 
@@ -282,9 +283,10 @@ def classify_new_emails(limit: int = 20):
                 log.info(f"Decision: chroma vzor → action={ra_action} (TODO: action-wiring v blockeru D)")
                 # Pro teď pokračujeme na AI; full action-wiring přijde v D
 
-            # decision flags (is_personal, force_tg_notify, no_auto_*) zatím
-            # ignorujeme v existující Llama pipeline — využijí se v blockeru D
-            # při refactoru klasifikace na novou semantiku.
+            # H3: persist flagy (is_personal/force_tg_notify/no_auto_*/matched_*)
+            # do DB i pro Llama-klasifikované emaily — notify_emails je čte
+            # pro visual indikátory (👤, ⭐ VIP, 👥 groups) a no_auto_action
+            # pro skip auto-trash níže.
 
             # 2a. Deterministická klasifikace pozvánky z kalendáře
             if subject and re.match(r'^invitation:', subject.strip(), re.IGNORECASE):
@@ -323,14 +325,21 @@ def classify_new_emails(limit: int = 20):
                 task_status = None
 
             _save_classification(email_id, firma, typ, task_status, is_spam, confidence)
+            _save_decision_flags(email_id, decision)
 
             # 4. Spam handling
             if is_spam:
                 short_from = _extract_email(from_addr or "")
-                if confidence >= SPAM_AUTO_THRESHOLD:
+                # H3: no_auto_action flag (např. VIP rule) → vždy ručně, i když AI 99%
+                no_auto = bool(decision.get("no_auto_action"))
+                if confidence >= SPAM_AUTO_THRESHOLD and not no_auto:
                     move_to_trash(email_id)
                     tg_send(f"🗑️ <b>AUTO-SPAM</b> ({confidence:.0%})\n<code>{html_escape(short_from)}</code>\n<i>{html_escape((subject or '')[:80])}</i>")
                     log.info(f"SPAM (auto trash, {confidence:.0%}): {subject}")
+                elif no_auto and confidence >= SPAM_AUTO_THRESHOLD:
+                    # Flag přebíjí auto-trash → nech rozhodnout Pavla přes TG
+                    send_spam_check(str(email_id), from_addr or "", subject or "")
+                    log.info(f"SPAM (no_auto_action override → TG, {confidence:.0%}): {subject}")
                 else:
                     # Llama není jistá → zeptáme se Claude
                     log.info(f"SPAM? Llama {confidence:.0%} → Claude verifikace: {subject[:60]}")
@@ -376,3 +385,36 @@ def _save_classification(email_id, firma, typ, task_status, is_spam, confidence)
     conn.commit()
     cur.close()
     conn.close()
+
+
+def _save_decision_flags(email_id, decision: dict):
+    """Persist decision_engine flagy + matched_rules/groups do email_messages.
+    Volá se po každém evaluate_email() — i když rule jen flagovalo.
+    """
+    if not decision:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE email_messages SET
+                is_personal           = %s,
+                force_tg_notify       = %s,
+                no_auto_action        = %s,
+                no_auto_konstruktivni = %s,
+                matched_rules         = %s,
+                matched_groups        = %s
+            WHERE id=%s
+        """, (
+            bool(decision.get("is_personal")),
+            bool(decision.get("force_tg_notify")),
+            bool(decision.get("no_auto_action")),
+            bool(decision.get("no_auto_konstruktivni")),
+            decision.get("matched_rules") or None,
+            decision.get("matched_groups") or None,
+            email_id,
+        ))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
