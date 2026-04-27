@@ -6,6 +6,7 @@ import base64
 import logging
 import os
 import time
+from html import escape as escape_html
 from db import get_conn
 from telegram_notify import get_updates, answer_callback, send, delete_message
 from imap_actions import action_done, move_to_trash, move_to_brogi_folder
@@ -104,12 +105,18 @@ def _save_offset(value: int) -> None:
 
 
 def _bridge_call(path: str, payload: dict, label: str, email_id: str) -> bool:
-    """Volá Apple Bridge; vrací True pokud uspěl NEBO byl enqueue do pending_actions
-    (degraded mode pro Apple Bridge offline — viz pending_worker.py).
+    """Volá Apple Bridge; vrací True pokud uspěl NEBO byl enqueue do pending_actions."""
+    ok, _ = _bridge_call_full(path, payload, label, email_id)
+    return ok
 
-    HTTP errory (4xx/5xx) → False + TG alert (server vrátil chybu, asi blbost v payload).
-    Connection errory (timeout, refused) → enqueue + True (Bridge offline, akce čeká
-    na drain worker, který ji zopakuje za < 1 min).
+
+def _bridge_call_full(path: str, payload: dict, label: str, email_id: str) -> tuple[bool, dict | None]:
+    """Stejné chování jako _bridge_call, ale navíc vrací parsed JSON odpověď
+    (None pokud parse selže nebo byl enqueue/error).
+
+    HTTP errory (4xx/5xx) → (False, None) + TG alert.
+    Connection errory (timeout/refused) → (True, None) + enqueue do pending_actions.
+    HTTP 200 → (True, dict) — volaný handler může vyčíst task_id apod.
     """
     import httpx as _httpx, os as _os
     bridge = _os.getenv("APPLE_BRIDGE_URL", "http://host.docker.internal:9100")
@@ -117,15 +124,17 @@ def _bridge_call(path: str, payload: dict, label: str, email_id: str) -> bool:
         r = _httpx.post(f"{bridge}{path}", json=payload, timeout=15)
         if r.status_code == 200:
             log.info(f"{label} created: email_id={email_id} status=200")
-            return True
+            try:
+                return True, r.json()
+            except Exception:
+                return True, None
         log.error(f"{label} FAILED: email_id={email_id} status={r.status_code} body={r.text[:200]}")
         try:
             send(f"❌ <b>{label} selhalo</b> ({r.status_code})\n<code>{r.text[:200]}</code>")
         except Exception:
             pass
-        return False
+        return False, None
     except (_httpx.ConnectError, _httpx.ConnectTimeout, _httpx.ReadTimeout, _httpx.NetworkError) as e:
-        # Bridge unreachable — enqueue do pending_actions, drain worker to dorovná
         try:
             from pending_worker import enqueue
             pid = enqueue(str(email_id), label.lower(), path, payload)
@@ -134,21 +143,21 @@ def _bridge_call(path: str, payload: dict, label: str, email_id: str) -> bool:
                 send(f"⏳ <b>{label} ve frontě</b> (Apple Studio offline)\n<i>Pending #{pid} — proběhne automaticky až Bridge ožije.</i>")
             except Exception:
                 pass
-            return True
+            return True, None
         except Exception as enq_err:
             log.error(f"{label} enqueue failed: email_id={email_id} {enq_err}")
             try:
                 send(f"❌ <b>{label} selhalo + enqueue selhal</b>\n<code>{str(e)[:200]}</code>")
             except Exception:
                 pass
-            return False
+            return False, None
     except Exception as e:
         log.error(f"{label} bridge error: email_id={email_id} {e}")
         try:
             send(f"❌ <b>{label} selhalo</b>\n<code>{str(e)[:200]}</code>")
         except Exception:
             pass
-        return False
+        return False, None
 
 
 def _mark_spam(email_id: int, is_spam: bool, from_address: str = None):
@@ -327,7 +336,7 @@ def _email_action(email_id: str, action: str):
         if body_preview:
             note += f"\n{body_preview}\n"
         note += f"\n─────\nBrogiASIST id: {email_id}"
-        ok = _bridge_call("/omnifocus/add_task", {
+        ok, resp = _bridge_call_full("/omnifocus/add_task", {
             "name": subject or "(bez předmětu)",
             "note": note,
             "flagged": True,
@@ -336,8 +345,21 @@ def _email_action(email_id: str, action: str):
         }, "OF", str(email_id))
         if not ok:
             return
+        # H2: persist task_id pro threading detekci budoucích replies
+        task_id = (resp or {}).get("task_id")
         conn = get_conn(); cur = conn.cursor()
-        cur.execute("UPDATE email_messages SET task_status='→OF', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
+        if task_id:
+            cur.execute(
+                "UPDATE email_messages SET task_status='→OF', of_task_id=%s, of_linked_at=NOW(), human_reviewed=TRUE, status='reviewed' WHERE id=%s",
+                (task_id, email_id),
+            )
+            log.info(f"OF task linked: email_id={email_id} of_task_id={task_id}")
+        else:
+            cur.execute(
+                "UPDATE email_messages SET task_status='→OF', human_reviewed=TRUE, status='reviewed' WHERE id=%s",
+                (email_id,),
+            )
+            log.warning(f"OF task created ale Bridge nevrátil task_id (degraded mode?): email_id={email_id}")
         conn.commit(); cur.close(); conn.close()
         imap_op = ("brogi", "HOTOVO")
     elif action == "rem":
@@ -414,6 +436,60 @@ def _email_action(email_id: str, action: str):
             """, (row[0],))
         conn.commit(); cur.close(); conn.close()
         imap_op = ("trash",)
+    elif action == "of_open":
+        # H2 thread flow: pošle do TG omnifocus:// URL pro tap-to-open na iOS/macOS.
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT of_task_id, subject FROM email_messages WHERE id=%s", (email_id,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row or not row[0]:
+            send("⚠️ <b>OF task není v threadu</b> — žádný of_task_id.")
+            do_mark_read = False
+            return
+        tid, subj = row
+        send(f"📂 <b>Otevři OF task:</b>\n<a href=\"omnifocus:///task/{tid}\">{escape_html(subj or '(bez předmětu)')}</a>")
+        # Žádný IMAP/DB update — Pavel jen otevírá, čte, sám rozhodne dál
+        do_mark_read = False
+    elif action == "of_append":
+        # H2 thread flow: append k notes existujícího OF tasku z threadu.
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT em.of_task_id, em.from_address, em.subject, em.body_text, em.sent_at
+            FROM email_messages em WHERE em.id=%s
+        """, (email_id,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            cur.close(); conn.close()
+            send("⚠️ <b>OF task není v threadu</b> — žádný of_task_id.")
+            do_mark_read = False
+            return
+        tid, fa, subj, body, sent_at = row
+        cur.close(); conn.close()
+        excerpt = (body or "").strip()[:1500]
+        ts = sent_at.strftime("%Y-%m-%d %H:%M") if sent_at else ""
+        append_text = (
+            f"─────\n"
+            f"📨 Update z threadu ({ts})\n"
+            f"Od: {fa}\n"
+            f"Předmět: {subj}\n\n"
+            f"{excerpt}"
+        )
+        ok = _bridge_call(f"/omnifocus/task/{tid}/append_note",
+                          {"text": append_text}, "OF append", str(email_id))
+        if not ok:
+            return
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute(
+            "UPDATE email_messages SET task_status='→OF', of_task_id=%s, of_linked_at=NOW(), human_reviewed=TRUE, status='reviewed' WHERE id=%s",
+            (tid, email_id),
+        )
+        conn.commit(); cur.close(); conn.close()
+        log.info(f"OF append: email_id={email_id} of_task_id={tid}")
+        imap_op = ("brogi", "HOTOVO")
+    elif action == "of_new":
+        # H2 thread flow: ignoruj existující thread vazbu, založ úplně nový OF task
+        # (re-use of action s upraveným task_status loggingem).
+        return _email_action(email_id, "of")
     elif action == "skip":
         do_mark_read = False  # skip = nechej unread
 
@@ -468,17 +544,20 @@ def _email_action(email_id: str, action: str):
 
 
 ACTION_LABEL = {
-    "hotovo":   "✅ Označeno jako hotovo",
-    "precteno": "👁️ Označeno jako přečteno",
-    "ceka":     "⏳ Čeká na mě",
-    "spam":     "🚫 Označeno jako SPAM",
-    "del":      "🗑️ Smazáno",
-    "of":       "📋 Přidáno do OmniFocus",
-    "rem":      "⏰ Přidáno do Reminders",
-    "note":     "📝 Uloženo do Notes",
-    "cal":      "📅 Přidáno do kalendáře",
-    "unsub":    "🚫 Odhlášen odesílatel",
-    "skip":     "⏭️ Přeskočeno",
+    "hotovo":    "✅ Označeno jako hotovo",
+    "precteno":  "👁️ Označeno jako přečteno",
+    "ceka":      "⏳ Čeká na mě",
+    "spam":      "🚫 Označeno jako SPAM",
+    "del":       "🗑️ Smazáno",
+    "of":        "📋 Přidáno do OmniFocus",
+    "rem":       "⏰ Přidáno do Reminders",
+    "note":      "📝 Uloženo do Notes",
+    "cal":       "📅 Přidáno do kalendáře",
+    "unsub":     "🚫 Odhlášen odesílatel",
+    "skip":      "⏭️ Přeskočeno",
+    "of_open":   "📂 OF link odeslán",
+    "of_append": "📎 Příloženo k OF tasku",
+    "of_new":    "➕ Nový OF task (mimo thread)",
 }
 
 

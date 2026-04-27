@@ -571,15 +571,20 @@ def omnifocus_add_task(body: dict):
 
     name_js = json.dumps(name)
     note_js = json.dumps(note)
+    # H2: vrátit task.id() — potřebné pro persistenci of_task_id
+    # v email_messages → threading detekce při replies.
     create_script = f"""
 const of2 = Application('OmniFocus');
 const doc = of2.defaultDocument;
 const task = of2.Task({{name: {name_js}, note: {note_js}, flagged: {flagged}}});
 doc.inboxTasks.push(task);
-JSON.stringify({{ok: true, name: {name_js}}});
+JSON.stringify({{ok: true, name: {name_js}, task_id: task.id()}});
 """
+    created_task_id = None
     try:
-        run_jxa(create_script)
+        result = run_jxa(create_script)
+        if isinstance(result, dict):
+            created_task_id = result.get("task_id")
     except HTTPException:
         raise
     except Exception as e:
@@ -607,6 +612,7 @@ JSON.stringify({{ok: true, name: {name_js}}});
     return {
         "ok": True,
         "name": name,
+        "task_id": created_task_id,
         "attachments_saved": len(saved_paths),
         "attachments_attached": attached_count,
         "attach_method": attach_method,

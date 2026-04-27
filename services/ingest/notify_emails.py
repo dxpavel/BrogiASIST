@@ -105,30 +105,77 @@ def _render_buttons(typ: str, email_id: str, has_unsubscribe: bool = False,
     return _buttons_for_typ(typ, email_id, has_unsubscribe, suggested)
 
 
+def _buttons_for_thread(email_id: str) -> list:
+    """H2: tlačítka pro thread continuation (email v threadu s existing OF task).
+    [📂 Otevřít OF] [📎 Append do OF]
+    [➕ Nový task]  [⏭ Skip]
+    """
+    eid = email_id
+    return [
+        [_btn("📂 Otevřít OF", "of_open", eid),
+         _btn("📎 Append",     "of_append", eid)],
+        [_btn("➕ Nový task",   "of_new", eid),
+         _btn("⏭ Skip",        "skip", eid)],
+    ]
+
+
 def notify_classified_emails():
     conn = get_conn()
     cur = conn.cursor()
+    # H2: LEFT JOIN LATERAL hledá prior email v threadu s of_task_id.
+    # Pokud existuje → email je pokračování existujícího OF tasku → speciální zpráva.
     cur.execute("""
-        SELECT id, mailbox, from_address, subject, typ, firma, ai_confidence, body_text,
-               raw_payload->'headers'->>'List-Unsubscribe' AS list_unsub,
-               is_personal, force_tg_notify, matched_groups
-        FROM email_messages
-        WHERE typ IS NOT NULL
-          AND is_spam = FALSE
-          AND tg_notified_at IS NULL
-          AND typ NOT IN ('SPAM', 'ESHOP')
-          AND human_reviewed = FALSE
-        ORDER BY sent_at DESC
+        SELECT em.id, em.mailbox, em.from_address, em.subject, em.typ, em.firma,
+               em.ai_confidence, em.body_text,
+               em.raw_payload->'headers'->>'List-Unsubscribe' AS list_unsub,
+               em.is_personal, em.force_tg_notify, em.matched_groups,
+               thr.of_task_id, thr.prev_subject
+        FROM email_messages em
+        LEFT JOIN LATERAL (
+            SELECT em2.of_task_id, em2.subject AS prev_subject
+            FROM email_messages em2
+            WHERE em2.thread_id = em.thread_id
+              AND em2.of_task_id IS NOT NULL
+              AND em2.id <> em.id
+            ORDER BY em2.sent_at ASC
+            LIMIT 1
+        ) thr ON em.thread_id IS NOT NULL
+        WHERE em.typ IS NOT NULL
+          AND em.is_spam = FALSE
+          AND em.tg_notified_at IS NULL
+          AND em.typ NOT IN ('SPAM', 'ESHOP')
+          AND em.human_reviewed = FALSE
+        ORDER BY em.sent_at DESC
         LIMIT 20
     """)
     rows = cur.fetchall()
 
     for (email_id, mailbox, from_addr, subject, typ, firma, confidence, body, list_unsub,
-         is_personal, force_tg_notify, matched_groups) in rows:
+         is_personal, force_tg_notify, matched_groups,
+         thread_of_task_id, thread_prev_subject) in rows:
         icon = TYP_ICON.get(typ, "📧")
         conf_str = f"{int((confidence or 0)*100)}%" if confidence else "?"
         short_from = from_addr.split("<")[-1].rstrip(">") if "<" in (from_addr or "") else (from_addr or "?")
         mb = mailbox.split("@")[0] if mailbox else "?"
+
+        # H2: thread continuation → speciální zpráva místo standardní per-TYP
+        if thread_of_task_id:
+            text = (
+                f"🧵 <b>THREAD pokračování</b>\n"
+                f"{icon} <b>{escape(typ)}</b>  <code>{escape(mb)}</code>\n"
+                f"Od: <code>{escape(short_from)}</code>\n"
+                f"Předmět: {escape(subject or '(bez předmětu)')}\n"
+                f"⛓ Existující OF task: <i>{escape((thread_prev_subject or '')[:80])}</i>"
+            )
+            buttons = _buttons_for_thread(str(email_id))
+            result = send(text, buttons)
+            if result:
+                msg_id = result.get("message_id")
+                cur.execute("UPDATE email_messages SET tg_notified_at=NOW(), tg_message_id=%s WHERE id=%s", (msg_id, email_id))
+                log.info(f"TG thread notify: typ={typ} id={email_id} of_task={thread_of_task_id}")
+            else:
+                log.warning(f"TG thread notify FAILED: id={email_id}")
+            continue
 
         # Zkontroluj ChromaDB — opakující se vzor?
         # 2026-04-27: silent auto-apply VYPNUTÝ. Místo automatické akce
