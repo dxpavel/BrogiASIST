@@ -74,7 +74,7 @@ def get_db_status() -> dict:
         ]
 
         cur.execute("""
-            SELECT id, mailbox, from_address, subject, sent_at, firma, typ, task_status, is_spam, ai_confidence, human_reviewed
+            SELECT id, mailbox, from_address, subject, sent_at, firma, typ, task_status, is_spam, ai_confidence, human_reviewed, source_id, mail_indexed
             FROM email_messages
             WHERE is_spam = FALSE
             ORDER BY sent_at DESC NULLS LAST
@@ -96,7 +96,7 @@ def get_db_status() -> dict:
              "from_address": r[2] or "—",
              "subject": r[3] or "(bez předmětu)", "sent_at": r[4],
              "firma": r[5], "typ": r[6], "task_status": r[7], "is_spam": r[8],
-             "confidence": r[9], "human_reviewed": r[10]}
+             "confidence": r[9], "human_reviewed": r[10], "source_id": r[11], "mail_indexed": r[12]}
             for r in cur.fetchall()
         ]
 
@@ -553,6 +553,31 @@ async def api_signal_delete(signal_id: int):
         cur.execute("DELETE FROM topic_signals WHERE id=%s", (signal_id,))
         conn.commit(); conn.close()
         return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/email/{email_id}/mark-not-indexed")
+async def mark_email_not_indexed(email_id: str):
+    """Označí email jako mail_indexed=FALSE (volá frontend po 404 z mail-bridge /open)."""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE email_messages
+               SET mail_indexed = FALSE,
+                   mail_indexed_checked_at = now()
+             WHERE id = %s
+            RETURNING id
+        """, (email_id,))
+        row = cur.fetchone()
+        conn.commit()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="email not found")
+        return {"ok": True, "id": str(row[0])}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

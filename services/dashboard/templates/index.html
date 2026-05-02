@@ -34,6 +34,23 @@
   .ef-chip.all.on { border-color:var(--primary); color:var(--primary-l); }
   .ef-sep { width:1px; height:16px; background:var(--border); align-self:center; }
   .ecount { font-family:'JetBrains Mono',monospace; font-size:9px; color:var(--muted); margin-left:2px; }
+  /* Mail-bridge link spinner + toast */
+  .mail-link { position:relative; display:inline-block; line-height:0; }
+  .mail-link.busy img { opacity:.25; }
+  .mail-link.busy::after { content:''; position:absolute; top:50%; left:50%; width:10px; height:10px; margin:-5px 0 0 -5px;
+                          border:2px solid var(--muted); border-top-color:transparent; border-radius:50%; animation:mlspin .7s linear infinite; }
+  @keyframes mlspin { to { transform:rotate(360deg); } }
+  .toast-container { position:fixed; top:14px; right:14px; z-index:9999; display:flex; flex-direction:column; gap:6px; pointer-events:none; max-width:340px; }
+  .toast { background:var(--surface); border:1px solid var(--border2); border-left:3px solid var(--muted);
+           padding:8px 12px; border-radius:4px; font-size:11px; color:var(--text);
+           box-shadow:0 4px 12px rgba(0,0,0,.4); pointer-events:auto;
+           animation:tin .15s ease-out; max-width:340px; }
+  .toast.ok    { border-left-color:var(--primary); }
+  .toast.warn  { border-left-color:var(--orange); }
+  .toast.error { border-left-color:var(--red); }
+  .toast .tmsg { line-height:1.4; }
+  .toast .tdetail { color:var(--muted); font-size:10px; margin-top:3px; font-family:'JetBrains Mono',monospace; word-break:break-all; }
+  @keyframes tin { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
 {% endblock %}
 
 {% block content %}
@@ -114,8 +131,8 @@
 
     <div style="max-height:330px;overflow-y:auto;">
     <table id="emailTable" style="table-layout:fixed;width:100%;">
-      <colgroup><col style="width:22px"><col style="width:16px"><col style="width:20%"><col style="width:auto"><col style="width:110px"><col style="width:60px"></colgroup>
-      <tr><th></th><th></th><th>Od</th><th>Předmět</th><th>Tagy</th><th style="text-align:right">Čas</th></tr>
+      <colgroup><col style="width:26px"><col style="width:22px"><col style="width:26px"><col style="width:20%"><col style="width:auto"><col style="width:110px"><col style="width:60px"></colgroup>
+      <tr><th></th><th></th><th></th><th>Od</th><th>Předmět</th><th>Tagy</th><th style="text-align:right">Čas</th></tr>
       {% for m in db.email_log %}
       {% set fc = {'DXPSOLUTIONS':'f-dxp','MBANK':'f-mbank','ZAMECNICTVI':'f-zamek','PRIVATE':'f-priv'} %}
       {% set tc = {
@@ -131,8 +148,9 @@
           data-task="{{ m.task_status or '' }}"
           data-from="{{ m.from_name|lower }}"
           data-subject="{{ (m.subject or '')|lower }}">
-        <td style="width:22px;padding:2px 3px">{% if m.firma %}<span class="badge {{ fc.get(m.firma, 'pending') }}" title="{{ m.firma }}">{{ m.firma[0] }}</span>{% endif %}</td>
-        <td style="width:16px;font-size:10px;text-align:center" title="{{ 'Ručně kalibrováno' if m.human_reviewed else 'AI klasifikace' }}">{{ '👤' if m.human_reviewed else ('🤖' if m.firma or m.typ else '') }}</td>
+        <td style="width:26px;padding:2px 5px">{% if m.firma %}<span class="badge {{ fc.get(m.firma, 'pending') }}" title="{{ m.firma }}">{{ m.firma[0] }}</span>{% endif %}</td>
+        <td style="width:22px;padding:2px 5px;font-size:10px;text-align:center" title="{{ 'Ručně kalibrováno' if m.human_reviewed else 'AI klasifikace' }}">{{ '👤' if m.human_reviewed else ('🤖' if m.firma or m.typ else '') }}</td>
+        <td style="width:26px;padding:2px 5px;text-align:center">{% if m.source_id and m.mail_indexed != False %}<a href="message://{{ m.source_id|urlencode }}" class="mail-link" data-source-id="{{ m.source_id }}" data-mailbox="{{ m.mailbox }}" data-email-id="{{ m.id }}" onclick="event.stopPropagation(); return openInMail(this);" title="Otevřít v Apple Mail (mail-bridge)"><img src="/static/icons/mail-app.png" width="14" height="14" alt="Mail" style="display:block;vertical-align:middle"></a>{% endif %}</td>
         <td style="overflow:hidden;text-overflow:ellipsis;font-size:9px;font-family:var(--font-mono)">{{ m.from_address }}</td>
         <td style="overflow:hidden;text-overflow:ellipsis;font-size:10px">{{ m.subject }}</td>
         <td style="white-space:nowrap;overflow:hidden">
@@ -408,6 +426,98 @@ async function saveEmail(markSpam){
   const body=markSpam?{is_spam:true}:{firma:_sel.firma,typ:_sel.typ,task_status:_sel.task};
   await fetch(`/api/email/${_emailId}/tags`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   closeModal();location.reload();
+}
+
+// === Mail-bridge: rozhodovací mechanismus klik → daemon → fallback ===
+const MAIL_BRIDGE_URL = 'http://localhost:9102';
+const MAIL_BRIDGE_PROBE_TIMEOUT_MS = 400;
+const MAIL_BRIDGE_OPEN_TIMEOUT_MS  = 18000;
+
+function ensureToastContainer(){
+  let c = document.getElementById('toastContainer');
+  if(!c){ c = document.createElement('div'); c.id='toastContainer'; c.className='toast-container'; document.body.appendChild(c); }
+  return c;
+}
+function showToast(msg, level, detail){
+  const c = ensureToastContainer();
+  const t = document.createElement('div');
+  t.className = 'toast ' + (level||'');
+  const m = document.createElement('div'); m.className='tmsg'; m.textContent = msg; t.appendChild(m);
+  if(detail){ const d = document.createElement('div'); d.className='tdetail'; d.textContent = detail; t.appendChild(d); }
+  c.appendChild(t);
+  setTimeout(()=>{ t.style.opacity='0'; t.style.transition='opacity .25s'; setTimeout(()=>t.remove(), 280); }, 4500);
+}
+async function fetchWithTimeout(url, opts, ms){
+  const ctrl = new AbortController();
+  const tid = setTimeout(()=>ctrl.abort(), ms);
+  try { return await fetch(url, {...(opts||{}), signal: ctrl.signal}); }
+  finally { clearTimeout(tid); }
+}
+async function openInMail(linkEl){
+  const sourceId = linkEl.dataset.sourceId || '';
+  const mailbox  = linkEl.dataset.mailbox  || '';
+  const fallbackHref = linkEl.getAttribute('href');
+
+  // Krok 1: probe daemon (400ms)
+  let bridgeAlive = false;
+  try {
+    const r = await fetchWithTimeout(MAIL_BRIDGE_URL + '/health', {method:'GET'}, MAIL_BRIDGE_PROBE_TIMEOUT_MS);
+    bridgeAlive = r.ok;
+  } catch(e){ bridgeAlive = false; }
+
+  // Krok 2: fallback pokud daemon offline → nativní message:// URL
+  if(!bridgeAlive){
+    showToast('Mail-bridge offline, používám nativní URL', 'warn',
+              'launchctl load ~/Library/LaunchAgents/cz.brogiasist.mail-bridge.plist');
+    window.location.href = fallbackHref;
+    return false;
+  }
+
+  // Krok 3: daemon běží, zavolat /open s busy stavem
+  linkEl.classList.add('busy');
+  try {
+    const r = await fetchWithTimeout(MAIL_BRIDGE_URL + '/open', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ message_id: sourceId, account_email: mailbox })
+    }, MAIL_BRIDGE_OPEN_TIMEOUT_MS);
+
+    if(r.status === 200){
+      const j = await r.json().catch(()=>({}));
+      // Mail.app naskočil — žádný toast (úspěch je sám sebou důkazem)
+      // pokud Pavel chce vidět kde se našlo, odkomentovat:
+      // showToast('Otevřeno v Mail.app', 'ok', `${j.phase} · ${j.location||''}`);
+    } else if(r.status === 404){
+      const j = await r.json().catch(()=>({}));
+      showToast('Email v Apple Mail nenalezen — ikonu skrývám', 'warn', j.detail || 'ani po sync');
+      // Auto-update: označ v DB jako not-indexed a skryj ikonu, aby tam příště nebyla
+      const emailId = linkEl.dataset.emailId;
+      if(emailId){
+        try {
+          await fetchWithTimeout(`/api/email/${emailId}/mark-not-indexed`, {method:'POST'}, 5000);
+        } catch(e){ /* tichá chyba — flag se opraví příštím scanem */ }
+        const cell = linkEl.closest('td');
+        if(cell) cell.innerHTML = '';
+      }
+    } else if(r.status === 504){
+      showToast('Sync timeout', 'warn', 'Apple Mail sync trval > 15 s');
+    } else if(r.status === 400){
+      const j = await r.json().catch(()=>({}));
+      showToast('Neplatné Message-ID', 'error', j.detail || sourceId);
+    } else {
+      const t = await r.text().catch(()=>'');
+      showToast('Mail-bridge chyba ' + r.status, 'error', t.slice(0,140));
+    }
+  } catch(e){
+    if(e.name === 'AbortError'){
+      showToast('Mail-bridge timeout', 'warn', `> ${MAIL_BRIDGE_OPEN_TIMEOUT_MS/1000}s`);
+    } else {
+      showToast('Mail-bridge selhal', 'error', e.message || String(e));
+    }
+  } finally {
+    linkEl.classList.remove('busy');
+  }
+  return false; // bránit nativnímu message:// fallbacku po async kliku
 }
 </script>
 {% endblock %}
