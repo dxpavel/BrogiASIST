@@ -48,9 +48,10 @@ SMTP_MAP = {
     "imap.seznam.cz":       ("smtp.seznam.cz",     465, "ssl"),
 }
 
-# IMAP Sent folder per host
+# IMAP Sent folder per host. None = server kopíruje SMTP odeslání
+# automaticky (Gmail), žádný APPEND potřeba.
 SENT_MAP = {
-    "imap.gmail.com":       "[Gmail]/Sent Mail",
+    "imap.gmail.com":       None,            # Gmail auto-copy do Sent
     "imap.mail.me.com":     "Sent Messages",
     "imap.forpsi.com":      "INBOX.Sent",
     "mail.dxpsolutions.cz": "INBOX.Sent",
@@ -76,13 +77,21 @@ def _smtp_open(host: str, port: int, security: str, user: str, password: str, ti
 
 
 def _imap_append_sent(account_name: str, msg: EmailMessage) -> bool:
-    """APPEND kopii do Sent folderu přes IMAP. Aby Pavel reply viděl v Mail.app."""
+    """APPEND kopii do Sent folderu přes IMAP. Aby Pavel reply viděl v Mail.app.
+
+    Gmail (host imap.gmail.com) → SENT_MAP=None → server kopíruje sám,
+    žádný APPEND. Vrací True (no-op success).
+    """
     acc = _account(account_name)
     if not acc:
         return False
-    sent_folder = SENT_MAP.get(acc.get("host", ""))
-    if not sent_folder:
-        log.warning(f"smtp_send: žádný SENT_MAP pro host {acc.get('host')!r}, skip APPEND")
+    host = acc.get("host", "")
+    sent_folder = SENT_MAP.get(host, "MISSING")
+    if sent_folder is None:
+        log.info(f"smtp_send: {host} kopíruje Sent automaticky, APPEND skip")
+        return True
+    if sent_folder == "MISSING":
+        log.warning(f"smtp_send: žádný SENT_MAP pro host {host!r}, skip APPEND")
         return False
     try:
         m = imap_connect(acc)
