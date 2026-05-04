@@ -49,7 +49,7 @@ Vrať JSON:
 {{
   "firma": "<DXPSOLUTIONS|MBANK|ZAMECNICTVI|PRIVATE>",
   "typ": "<ÚKOL|DOKLAD|NABÍDKA|NOTIFIKACE|POZVÁNKA|INFO>",
-  "task_status": "<ČEKÁ-NA-MĚ|ČEKÁ-NA-ODPOVĚĎ|null>",
+  "task_status": "<ČEKÁ-NA-ODPOVĚĎ|null>",
   "is_spam": <true|false>,
   "confidence": <0.0-1.0>,
   "reason": "<1 věta proč>"
@@ -63,8 +63,18 @@ Pravidla pro TYP (per spec brogiasist-semantics-v1):
 - POZVÁNKA: Calendar invite (subject 'Invitation:' nebo .ics)
 - INFO: vše ostatní informativní (newsletter, blog update, OOO reply)
 
+Pravidla pro task_status (Pavlovo rozhodnutí 2026-05-04):
+- "ČEKÁ-NA-MĚ" se NIKDY nepoužívá — TYP=ÚKOL už sám říká „čeká na mě", je to redundantní
+- "ČEKÁ-NA-ODPOVĚĎ" jen když Pavel poslal dotaz/email a čeká odpověď od někoho třetího
+- null v ostatních případech (vč. INFO, NOTIFIKACE, NABÍDKA bez follow-upu)
+
 POZNÁMKA: TYPy ERROR (bounce/DSN), LIST (mailing list), ENCRYPTED (S/MIME) detekuje
 header check v decision_rules engine PŘED Llamou — sem nepřijdou."""
+
+# Whitelist hodnot pro validaci Llama outputu (sanitizace placeholder strings).
+_VALID_TYP = {"ÚKOL", "DOKLAD", "NABÍDKA", "NOTIFIKACE", "POZVÁNKA", "INFO"}
+_VALID_TASK_STATUS = {"ČEKÁ-NA-ODPOVĚĎ", "HOTOVO", "→OF", "→REM", "→CAL"}
+_VALID_FIRMA = {"DXPSOLUTIONS", "MBANK", "ZAMECNICTVI", "PRIVATE"}
 
 
 def _check_rules(from_addr: str) -> dict | None:
@@ -319,9 +329,30 @@ def classify_new_emails(limit: int = 20):
                 log.info(f"KONTAKT override: AI řekla spam, ignoruji ({from_addr})")
                 is_spam = False
             confidence = float(result.get("confidence", 0.5))
-            typ = result.get("typ", "INFO")
-            task_status = result.get("task_status")
-            if task_status == "null":
+            # 2026-05-04: Sanitize Llama output — invalid hodnoty (vč. raw
+            # placeholder stringů typu "<ÚKOL|DOKLAD|...>") → fallback.
+            raw_typ = result.get("typ", "INFO")
+            typ = raw_typ if raw_typ in _VALID_TYP else "INFO"
+            if typ != raw_typ:
+                log.warning(f"Llama vrátila invalid typ={raw_typ!r}, fallback INFO ({email_id})")
+
+            raw_status = result.get("task_status")
+            if raw_status in (None, "null", "", "<ČEKÁ-NA-ODPOVĚĎ|null>"):
+                task_status = None
+            elif raw_status == "ČEKÁ-NA-MĚ":
+                # Pavlovo pravidlo: ČEKÁ-NA-MĚ je redundantní s TYP=ÚKOL → null
+                task_status = None
+                log.info(f"task_status='ČEKÁ-NA-MĚ' ignorováno (redundant s ÚKOL): {email_id}")
+            elif raw_status in _VALID_TASK_STATUS:
+                task_status = raw_status
+            else:
+                log.warning(f"Llama vrátila invalid task_status={raw_status!r}, fallback null ({email_id})")
+                task_status = None
+
+            # Cross-rule: task_status='ČEKÁ-NA-ODPOVĚĎ' nedává smysl pro
+            # NEWSLETTER/INFO (nikdy se neodpovídá) — fallback na null.
+            if task_status == "ČEKÁ-NA-ODPOVĚĎ" and typ in ("INFO", "NEWSLETTER", "NOTIFIKACE"):
+                log.info(f"task_status='ČEKÁ-NA-ODPOVĚĎ' s typ={typ} → null: {email_id}")
                 task_status = None
 
             _save_classification(email_id, firma, typ, task_status, is_spam, confidence)
@@ -353,8 +384,8 @@ def classify_new_emails(limit: int = 20):
                         _save_classification(email_id, firma, typ, task_status, True, confidence)
                         move_to_trash(email_id)
                         cached = " (cache)" if claude.get("cached") else ""
-                        tg_send(f"🗑️ <b>AUTO-SPAM</b> Claude{cached} ({confidence:.0%})\n<code>{html_escape(short_from)}</code>\n<i>{html_escape((subject or '')[:80])}</i>")
-                        log.info(f"SPAM (Claude potvrzen → trash, {confidence:.0%}): {claude.get('reason','')}")
+                        tg_send(f"🗑️ <b>AUTO-SPAM</b> Claude potvrdil{cached}\n<code>{html_escape(short_from)}</code>\n<i>{html_escape((subject or '')[:80])}</i>")
+                        log.info(f"SPAM (Claude potvrzen → trash, Llama {confidence:.0%}): {claude.get('reason','')}")
                     else:
                         # Claude říká NENÍ spam → překlasifikuj a nech projít normálně
                         _save_classification(email_id, firma, typ, task_status, False, confidence)

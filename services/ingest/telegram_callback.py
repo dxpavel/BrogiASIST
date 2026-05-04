@@ -423,17 +423,35 @@ def _email_action(email_id: str, action: str):
         conn.commit(); cur.close(); conn.close()
         imap_op = ("brogi", "HOTOVO")
     elif action == "unsub":
+        # 2026-05-04: Graceful no-op pokud email nemá List-Unsubscribe header.
+        # Univerzální 3×3 layout zobrazuje 2unsub vždy (9 buttons), takže Pavel
+        # může kliknout i u personal/business emailů. Bez headeru = informativní
+        # TG zpráva, žádná destruktivní akce.
         conn = get_conn(); cur = conn.cursor()
-        cur.execute("SELECT from_address FROM email_messages WHERE id=%s", (email_id,))
+        cur.execute("SELECT from_address, unsubscribe_url FROM email_messages WHERE id=%s", (email_id,))
         row = cur.fetchone()
-        if row:
-            cur.execute("UPDATE email_messages SET is_spam=TRUE, human_reviewed=TRUE WHERE from_address=%s", (row[0],))
-            cur.execute("""
-                INSERT INTO classification_rules (rule_type, match_field, match_value, result_value)
-                VALUES ('spam', 'from_address', %s, 'yes')
-                ON CONFLICT (rule_type, match_field, match_value) DO UPDATE
-                    SET result_value='yes', hit_count=classification_rules.hit_count+1, updated_at=NOW()
-            """, (row[0],))
+        cur.close(); conn.close()
+        if not row:
+            send("⚠️ Email nenalezen.")
+            do_mark_read = False
+            return
+        from_addr, unsub_url = row
+        if not unsub_url:
+            send(
+                "⚠️ <b>Nelze odhlásit</b>\n"
+                "Email nemá <code>List-Unsubscribe</code> header.\n"
+                "Pokud je to spam, použij <code>🚫 2spam</code>."
+            )
+            do_mark_read = False
+            return
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("UPDATE email_messages SET is_spam=TRUE, human_reviewed=TRUE WHERE from_address=%s", (from_addr,))
+        cur.execute("""
+            INSERT INTO classification_rules (rule_type, match_field, match_value, result_value)
+            VALUES ('spam', 'from_address', %s, 'yes')
+            ON CONFLICT (rule_type, match_field, match_value) DO UPDATE
+                SET result_value='yes', hit_count=classification_rules.hit_count+1, updated_at=NOW()
+        """, (from_addr,))
         conn.commit(); cur.close(); conn.close()
         imap_op = ("trash",)
     elif action == "of_open":

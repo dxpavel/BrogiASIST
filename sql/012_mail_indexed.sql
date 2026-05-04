@@ -7,4 +7,3 @@ CREATE INDEX IF NOT EXISTS idx_email_mail_indexed
     ON email_messages(mail_indexed) WHERE mail_indexed IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_email_mail_indexed_checked_at
     ON email_messages(mail_indexed_checked_at);
-</content>

@@ -1117,6 +1117,77 @@ docker images <image> --format '{{.CreatedAt}}'
 
 ---
 
+## 42. Llama klasifikátor vrací doslovně placeholder strings — vždy validovat enum (2026-05-04)
+
+### Incident
+DB query `SELECT typ, task_status, COUNT(*) FROM email_messages` ukázal:
+- 17 emailů s `task_status='<ČEKÁ-NA-MĚ|ČEKÁ-NA-ODPOVĚĎ|null>'` (raw template echo)
+- 3 emaily s `typ='<ÚKOL|DOKLAD|NABÍDKA|NOTIFIKACE|POZVÁNKA|INFO>'`
+
+Llama 3.2-vision občas vrátí raw placeholder string místo skutečné hodnoty, zvlášť když body emailu je krátký nebo nejasný. Parser `result.get("task_status")` to akceptoval bez validace → uloženo do DB.
+
+### Fix (`classify_emails.py`)
+```python
+_VALID_TYP = {"ÚKOL", "DOKLAD", "NABÍDKA", "NOTIFIKACE", "POZVÁNKA", "INFO"}
+_VALID_TASK_STATUS = {"ČEKÁ-NA-ODPOVĚĎ", "HOTOVO", "→OF", "→REM", "→CAL"}
+
+raw_typ = result.get("typ", "INFO")
+typ = raw_typ if raw_typ in _VALID_TYP else "INFO"  # fallback
+
+raw_status = result.get("task_status")
+if raw_status in (None, "null", "", "<ČEKÁ-NA-ODPOVĚĎ|null>"):
+    task_status = None
+elif raw_status in _VALID_TASK_STATUS:
+    task_status = raw_status
+else:
+    task_status = None  # placeholder / invalid → null
+```
+
+### Plus business rule (Pavlovo rozhodnutí)
+- `task_status='ČEKÁ-NA-MĚ'` se NIKDY nezapisuje. TYP=ÚKOL už sám říká „čeká na mě", `ČEKÁ-NA-MĚ` je redundantní pro ÚKOL a nesmyslné pro ostatní TYPy.
+- `task_status='ČEKÁ-NA-ODPOVĚĎ'` u TYP ∈ {INFO, NEWSLETTER, NOTIFIKACE} → null (newsletter neodpovídá).
+
+### Backfill (jednorázově)
+```sql
+UPDATE email_messages SET task_status=NULL WHERE task_status='ČEKÁ-NA-MĚ';                    -- 46
+UPDATE email_messages SET task_status=NULL WHERE task_status LIKE '<%|%>';                    -- 14
+UPDATE email_messages SET typ=NULL WHERE typ LIKE '<%|%>';                                    -- 4
+UPDATE email_messages SET task_status=NULL
+   WHERE task_status='ČEKÁ-NA-ODPOVĚĎ' AND typ IN ('INFO','NEWSLETTER','NOTIFIKACE');         -- 14
+```
+
+### Poučení
+- **LLM JSON output ≠ trustworthy enum.** Vždy validuj proti whitelistu. Llama 3.2 i Claude občas haluje na okrajích.
+- **Pattern**: pro každý enum sloupec v DB udržuj `_VALID_*` set v kódu, s `if not in set: log.warning + fallback`.
+- Smysl `decision_engine` je rozhodovat PŘED Llamou (header check, group rules) — invalid Llama output by se neměl propsat do DB v žádném scenáři.
+
+---
+
+## 43. Univerzální 3×3 Telegram layout vyžaduje always-show buttons + graceful no-op (2026-05-04)
+
+### Incident
+Pavlův screenshot ukázal že INFO email od `lukas.lahoda@louda.cz` měl 8 tlačítek (3+2+3 layout — chyběl třetí button v middle row), zatímco NABÍDKA od Coursera měla 9 (3+3+3). Inkonzistence v UI.
+
+### Příčina (`notify_emails.py`)
+```python
+row2 = [_btn("📅 2cal"), _btn("📝 2note")]
+if has_unsubscribe:
+    row2.append(_btn("🚫 2unsub"))  # jen pokud email má List-Unsubscribe header
+```
+
+Personal/business emaily nemají List-Unsubscribe header → `2unsub` chyběl → 8 buttons → asymetrický layout.
+
+### Fix
+1. **`notify_emails.py`**: `2unsub` zobrazit VŽDY (univerzální 3×3 = 9 buttons konzistentně).
+2. **`telegram_callback.py` (action=unsub handler)**: graceful no-op — pokud `unsubscribe_url IS NULL`, vrátit TG zprávu „Email nemá List-Unsubscribe header. Pokud je to spam, použij 2spam." a žádná destruktivní akce.
+
+### Poučení
+- **„Univerzální layout" znamená univerzální v každé zprávě**, ne podmíněně podle datových polí. Layout konzistence > UX optimalizace per email.
+- **Graceful no-op pattern pro destruktivní akce**: když handler nemá data pro plnou akci, vrať informativní zprávu místo nedostupnosti tlačítka. Uživatel se naučí semantiku rychleji než z chybějícího UI.
+- Identický pattern by se měl aplikovat na další buttons které jsou občas relevantní (např. `2cal` pro POZVÁNKA — pokud email nemá .ics, handler graceful no-op místo skrytí).
+
+---
+
 ## Co ještě nebylo řešeno / TODO
 
 - **iMessage ingest** — bridge endpoint naplánován, ingest skript a DB tabulka chybí

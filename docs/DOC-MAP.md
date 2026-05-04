@@ -1,7 +1,7 @@
 ---
 Název: DOC-MAP
 Soubor: docs/DOC-MAP.md
-Verze: 4.8 (drift fix patch 2026-05-04)
+Verze: 4.9 (TG buttons + task_status fix 2026-05-04)
 Poslední aktualizace: 2026-05-04
 Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, neexistuje.
 ---
@@ -18,7 +18,7 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 | `SESSION-HANDOFF-D-CONTINUATION.md` | **PRIORITNÍ** handoff pro pokračování blockeru D — HIGH/MEDIUM/LOW priority + první krok | ✅ 2026-04-26 |
 | `brogiasist-architecture-v1.md` | Stack, services, endpointy, DB schéma, dataflow, IMAP akce — **vč. v2 komponent (decision_engine, pending_worker) + 2026-04-27 (univerzální 3×3 layout, 2del, predikce-jako-návrh, auto-spam vypnut)** | ✅ 2026-04-27 |
 | `brogiasist-data-dictionary-v1.md` | Datový model, DB tabulky, procesní tok, AI vrstvy — **vč. decision_rules + pending_actions + 9. ACTION 2del + endpoint POST /emails/suggested** | ✅ 2026-04-27 |
-| `brogiasist-lessons-learned-v1.md` | Poučení z praxe — IMAP, JXA, Docker, action logging, **+ sekce 38/39** (auto-spam, header_bounce), **+ sekce 40** (Python long-running + `docker cp` ≠ reload), **+ sekce 41** (md5 není dostatečný diag signál) | ✅ 2026-05-04 |
+| `brogiasist-lessons-learned-v1.md` | Poučení z praxe — IMAP, JXA, Docker, action logging, **+ 38/39** (auto-spam, header_bounce), **+ 40/41** (drift fix), **+ 42** (Llama placeholder strings → enum sanitize), **+ 43** (univerzální 3×3 always-show + graceful no-op) | ✅ 2026-05-04 |
 | `brogiasist-infrastructure-v1.md` | Stroje, porty, sítě, Docker, Apple Bridge — **DEV vs PROD** | ✅ 2026-04-26 |
 | `brogiasist-semantics-v1.md` | **Email TYP/STATUS/ACTION semantika** — kanonická spec + sekce 21 (implementation status na branch `2`) | ✅ 2026-04-26 v1.2 |
 | `BUGS.md` | Známé bugy a tech debt — **BUG-001/004/005/006/009/010 OPEN**, BUG-002/003 FIXED v 1.1, **BUG-007/008 FIXED 2026-04-26** | ✅ 2026-04-26 |
@@ -53,6 +53,14 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 | Soubor | Popis | Použití |
 |---|---|---|
 | `youtube-subscriptions.json` | Snapshot YouTube odběrů (seedovací data) | Vstup pro `ingest_youtube.py` při bootstrapu |
+
+---
+
+## Feature specs (zadání pro Code session)
+
+| Soubor | Popis | Stav |
+|---|---|---|
+| `feature-specs/FEATURE-EMAIL-MAIL-LINK-v1.md` | Email link → Apple Mail.app na index dashboardu (ikona 📧, sloupec `mail_indexed`, sql/012) | ✅ READY-FOR-CODE → IMPLEMENTED commit 5324b74 |
 
 ---
 

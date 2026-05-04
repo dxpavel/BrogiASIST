@@ -422,6 +422,12 @@ Scope: typicky modul (`scheduler`, `apple-bridge`, `dashboard`, `ingest`, `D5`, 
 **STATUS** (životní cyklus):
 NOVÝ · PŘEČTENÝ · ČEKAJÍCÍ · ZPRACOVANÝ · SMAZANÝ
 
+**`email_messages.task_status`** (sub-stav po klasifikaci, 2026-05-04 revize):
+- `ČEKÁ-NA-ODPOVĚĎ` — Pavel poslal dotaz, čeká na třetí stranu
+- `HOTOVO` · `→OF` · `→REM` · `→CAL` — výsledek user akce
+- `NULL` — výchozí (vč. INFO/NOTIFIKACE bez follow-upu)
+- ⚠️ `ČEKÁ-NA-MĚ` se **NIKDY** nezapisuje (redundantní s TYP=ÚKOL). Validace v `classify_emails.py` to filtruje.
+
 **ACTION** (9 hodnot, malými, prefix `2` = „to"):
 2of · 2rem · 2cal · 2note · 2hotovo · **2del** · 2spam · 2unsub · 2skip + 2undo (TTL 1h)
 
@@ -450,6 +456,7 @@ header check → skupina BLOCKED ignoruj → VIP / personal flagy → Chroma vzo
 | 2026-04-26 | 1.0 | Vytvořeno — autoritativní pravda po release v2 work day |
 | 2026-04-27 | 1.1 | Přidána ACTION `2del` (var. C — ve všech TYPech). Update sekce 9 (rozhodnutí), sekce 14 (sumár) — 8 → 9 ACTIONs. |
 | 2026-05-04 | 1.2 | Sekce 12 — přidány dva nové gotchas: Python long-running + `docker cp`, TG bot 409 Conflict (paralelní instance). Pointery na lessons #40, #41. |
+| 2026-05-04 | 1.3 | Sekce 14 — `task_status` sub-stav doplněn, `ČEKÁ-NA-MĚ` odstraněno (redundantní s TYP=ÚKOL). Lessons #42 (placeholder strings sanitize) + #43 (univerzální 3×3 layout always-show). |
 
 > **Edituj tento soubor kdykoli se změní realita** (PROD migrace, nové branch konvence,
 > nové bugy, přejmenování, nové infrastructure...). Commit + push, příští session

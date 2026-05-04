@@ -68,10 +68,12 @@ def _buttons_for_typ(
             return f"⭐ {_ACTION_2X.get(action, action)} ⭐"
         return default
 
+    # 2026-05-04: 2unsub se zobrazí VŽDY (univerzální 3×3 = 9 buttons konzistentně).
+    # Pokud email nemá List-Unsubscribe header, handler vrátí TG zprávu
+    # "nelze odhlásit, použij 2spam" — viz telegram_callback.py.
     row2 = [_btn(lbl("📅 2cal", "cal"),    "cal",  eid),
-            _btn(lbl("📝 2note", "note"), "note", eid)]
-    if has_unsubscribe:
-        row2.append(_btn(lbl("🚫 2unsub", "unsub"), "unsub", eid))
+            _btn(lbl("📝 2note", "note"), "note", eid),
+            _btn(lbl("🚫 2unsub", "unsub"), "unsub", eid)]
 
     universal = [
         [_btn(lbl("✅ 2hotovo", "hotovo"), "hotovo", eid),
