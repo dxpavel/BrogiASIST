@@ -109,7 +109,11 @@ def mark_read(email_id) -> bool:
     try:
         m = connect(acc)
         imap_folder = folder or "INBOX"
-        m.select(imap_folder)
+        typ, _ = m.select(imap_folder)
+        if typ != "OK":
+            m.logout()
+            log.warning(f"mark_read skip: SELECT {imap_folder} returned {typ} ({mailbox} uid={imap_uid})")
+            return False
         m.uid("STORE", str(imap_uid), "+FLAGS", "(\\Seen)")
         m.logout()
         log.info(f"mark_read OK: {mailbox} uid={imap_uid}")
@@ -171,5 +175,16 @@ def move_to_brogi_folder(email_id, subfolder: str) -> bool:
 
 
 def action_done(email_id):
-    """Zavolat po každé akci — mark_read na IMAP."""
+    """Zavolat po každé akci — mark_read na IMAP.
+
+    BUG-014: Po move_to_trash/move_to_brogi_folder má email v cílové složce
+    jiný UID (UIDVALIDITY se mění mezi folders). Pro Trash/Deleted/Spam
+    skip — `_update_db_folder` už nastavil is_read=TRUE a STORE by selhal.
+    """
+    info = get_imap_info(email_id)
+    if not info:
+        return
+    _, _, folder = info
+    if folder and any(t in folder.lower() for t in ("trash", "deleted", "spam", "junk")):
+        return
     mark_read(email_id)
