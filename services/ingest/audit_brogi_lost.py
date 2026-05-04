@@ -81,7 +81,7 @@ def audit_account(mailbox: str):
     cur.execute("""
         SELECT id, message_id, folder, subject
         FROM email_messages
-        WHERE folder LIKE 'BrogiASIST/%'
+        WHERE folder LIKE 'BrogiASIST/%%'
           AND mailbox = %s
           AND imap_lost = FALSE
         ORDER BY ingested_at
@@ -162,7 +162,8 @@ def main():
         try:
             audit_account(mailbox)
         except Exception as e:
-            log.error(f"{mailbox} audit failed: {e}")
+            import traceback
+            log.error(f"{mailbox} audit failed: {e}\n{traceback.format_exc()}")
     log.info("BUG-006 audit DONE")
 
 

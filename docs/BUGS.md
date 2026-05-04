@@ -236,7 +236,7 @@ try:
 
 **Severita:** medium (audit/historie — kód běží dál, ale DB lže o stavu)
 **Zjištěno:** 2026-04-26 (větev 1, audit po BUG-004 mitigaci)
-**Status:** OPEN — odloženo na samostatnou session (čištění dat)
+**Status:** **FIXED 2026-05-04 (commit 7a55330)** — migrace 019 přidává `email_messages.imap_lost BOOLEAN`. Skript `services/ingest/audit_brogi_lost.py` projel 34 PROD emailů: **32 LOST → flag imap_lost=TRUE**, **1 FOUND v INBOX.Trash** (postapro, folder DB updated), **1 no_message_id** (brogi `Login from a new location`, nemůže být hledán). Suspektní emaily zůstávají v DB pro audit (subject + body + headers), ale flag je signalizuje frontendu jako „fyzicky neexistují".
 
 ### Popis
 Po vytvoření BrogiASIST hierarchie (BUG-004 mitigace) jsme se podívali zpětně do DB:
