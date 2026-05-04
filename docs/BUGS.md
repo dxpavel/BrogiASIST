@@ -579,6 +579,116 @@ Sekce **44** v `brogiasist-lessons-learned-v1.md`.
 
 ---
 
+## BUG-013 — Llama vrací raw placeholder `<0.0-1.0>` místo čísla v `confidence`
+
+**Severita:** medium (selže klasifikace celého emailu — `continue` v outer loop, email zůstane v `status='new'`)
+**Zjištěno:** 2026-05-04 (PROD log audit po BUG-012 deploy, 13:27:35 UTC)
+**Status:** OPEN
+
+### Popis
+[services/ingest/classify_emails.py:331](services/ingest/classify_emails.py:331) — `confidence = float(result.get("confidence", 0.5))` bez sanitize.
+
+Llama prompt template ([classify_emails.py:54](services/ingest/classify_emails.py:54)) má placeholder `"confidence": <0.0-1.0>`. Občas (≈1×/den dle observation) Llama tu hodnotu **echo-uje doslova** místo aby ji vyhodnotila — vrátí `{"confidence": "<0.0-1.0>"}`. `float("<0.0-1.0>")` → `ValueError: could not convert string to float`. Výjimka propadne do outer try/except, email se logguje jako `[ERROR] classify <id>: could not convert string to float: '<0.0-1.0>'` a klasifikace skončí.
+
+### Důsledek
+- Email zůstane neklasifikovaný (`status='new'`, `typ=NULL`)
+- TG notifikace neproběhne — Pavel se o emailu nedozví dokud někdo ručně netriggerne re-classify
+- Aktuálně postižen: `7c5bc148-2f4c-4872-ac54-8d48cb5b2d6f` (2026-05-04 13:27:35)
+
+### Příčina
+Sanitize logika v [classify_emails.py:332-355](services/ingest/classify_emails.py:332) řeší **`typ`** (whitelist `_VALID_TYP`) a **`task_status`** (whitelist `_VALID_TASK_STATUS`), ale **`confidence` chybí**. Stejný anti-pattern jako sanitize problému z lekce **#42**, jen pro číselný field.
+
+### Návrh řešení
+```python
+# services/ingest/classify_emails.py:331
+raw_confidence = result.get("confidence", 0.5)
+try:
+    confidence = float(raw_confidence)
+    if not (0.0 <= confidence <= 1.0):
+        raise ValueError(f"out of range: {confidence}")
+except (TypeError, ValueError) as e:
+    log.warning(f"Llama vrátila invalid confidence={raw_confidence!r}, fallback 0.5 ({email_id}): {e}")
+    confidence = 0.5
+```
+
+Plus zvážit retry Llama call pokud více polí vrátí raw placeholders (signál že model je v špatném stavu / temp glitch).
+
+### Jak ověřit po opravě
+```bash
+ssh pavel@10.55.2.231 "docker logs brogiasist-scheduler --since 24h 2>&1 | grep -E 'could not convert.*0\\.0-1\\.0|invalid confidence'"
+# musí: 0× ValueError, případně N× warning "fallback 0.5"
+```
+
+A re-classify postiženého emailu:
+```sql
+UPDATE email_messages SET status='new', typ=NULL WHERE id='7c5bc148-2f4c-4872-ac54-8d48cb5b2d6f';
+```
+Pak `classify_new_emails` proběhne v dalším 5min cyklu.
+
+---
+
+## BUG-014 — `mark_read` selhává s `STORE illegal in state AUTH` po `move_to_trash`
+
+**Severita:** medium (false ERROR v logu po každé `2del`/`2spam` akci na Gmail/Synology, email reálně už v Trash)
+**Zjištěno:** 2026-05-04 (PROD log audit, 13:32:23 + 13:47:00 UTC)
+**Status:** OPEN
+
+### Popis
+Sekvence z PROD logu:
+```
+13:32:22 [INFO] move_to_trash OK: dxpavel@gmail.com uid=114152 → [Gmail]/Trash
+13:32:23 [ERROR] mark_read dxpavel@gmail.com uid=114152: command STORE illegal in state AUTH, only allowed in states SELECTED
+```
+
+Po úspěšném `move_to_trash` se volá `_mark_read_after_action` → `mark_read(email_id)`. To načte z DB `(mailbox, uid, folder)` = `(dxpavel@gmail.com, 114152, [Gmail]/Trash)` — folder už je updatovaný (`_update_db_folder` to udělalo v rámci move). Ale **původní UID 114152 v `[Gmail]/Trash` neexistuje** — Gmail při MOVE generuje nový UID v cílové složce (UIDVALIDITY se mění mezi folders).
+
+Pak [imap_actions.py:112-113](services/ingest/imap_actions.py:112):
+```python
+m.select(imap_folder)            # pravděpodobně vrátí non-OK (nebo OK ale uid neexistuje)
+m.uid("STORE", str(imap_uid), "+FLAGS", "(\\Seen)")  # crashne s STORE illegal
+```
+
+Navíc — `m.select()` návratový kód kód ignoruje. Pokud SELECT selže (server vrátí `BAD`/`NO`), spojení zůstane ve stavu AUTH a STORE pak vyhodí `illegal in state AUTH`.
+
+### Důsledek
+- Každá `2del`/`2spam` akce na Gmail/Synology generuje 1× false ERROR v logu (zatemňuje skutečné errory)
+- Funkčně OK — email **už je v Trash**, `_update_db_folder` v `move_to_trash` taky nastavil DB `is_read=TRUE` (parametr `mark_read=True` v line 139)
+- Tedy `mark_read` po `move_to_trash` je **redundantní** — práce už je hotová
+
+### Návrh řešení
+**Varianta A (preferovaná, 1 řádek):** v `_mark_read_after_action` ([imap_actions.py:174](services/ingest/imap_actions.py:174)) skip pro emaily co jsou už v Trash/Deleted:
+```python
+def _mark_read_after_action(email_id):
+    info = get_imap_info(email_id)
+    if not info:
+        return
+    _, _, folder = info
+    if folder and any(t in folder.lower() for t in ("trash", "deleted", "spam")):
+        return  # email už není v INBOX, mark_read je no-op
+    mark_read(email_id)
+```
+
+**Varianta B (defensive, robustnější):** v `mark_read` ([imap_actions.py:109-113](services/ingest/imap_actions.py:109)) check návratu SELECT:
+```python
+typ, _ = m.select(imap_folder)
+if typ != "OK":
+    log.warning(f"mark_read skip: SELECT {imap_folder} failed ({typ})")
+    m.logout()
+    return False
+m.uid("STORE", ...)
+```
+
+**Doporučuji A + B** — A řeší root cause (zbytečné volání), B je pojistka pro budoucí případy.
+
+### Jak ověřit po opravě
+```bash
+# klik na 2del v TG na test email z Gmail
+ssh pavel@10.55.2.231 "docker logs brogiasist-scheduler --since 5m 2>&1 | grep -E 'STORE illegal|mark_read.*Gmail'"
+# musí: 0× STORE illegal, žádný mark_read pokus po move_to_trash
+```
+
+---
+
 ## Šablona pro nový bug
 
 ```markdown

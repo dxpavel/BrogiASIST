@@ -315,6 +315,8 @@ ssh dxpavel@10.55.2.117 "launchctl list | grep brogi && curl -sm 5 http://localh
 | BUG-010 | MEDIUM | Mail.app AppleScript neumí custom headers (X-Brogi-Auto) | OPEN — vyžaduje arch decision |
 | BUG-011 | MEDIUM | JSONB `@>` case-sensitive v decision_engine | **FIXED 2026-04-27** (commit af5df96) |
 | BUG-012 | MEDIUM | iCloud IMAP `data[0]=None` → `NoneType.split` crash | **FIXED 2026-05-04** |
+| BUG-013 | MEDIUM | Llama vrací raw placeholder `<0.0-1.0>` v `confidence` → ValueError | OPEN — sanitize chybí |
+| BUG-014 | MEDIUM | `mark_read` po `move_to_trash` → `STORE illegal in state AUTH` | OPEN — skip pro Trash folders |
 
 ---
 
