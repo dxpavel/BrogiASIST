@@ -26,6 +26,10 @@ MODEL = "llama3.2-vision:11b"
 SPAM_AUTO_THRESHOLD = 2.0
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = "claude-haiku-4-5"  # rychlý+levný pro verifikaci spamu
+# M5 session 2: práh pro eskalaci na Claude verify TYP cascade.
+# Pod threshold → ai_source='llama_low_confidence' (TODO: session 3 zavolá Claude).
+# Default 0.90 — kalibrace po 1-2 týdnech provozu.
+CLAUDE_VERIFY_THRESHOLD = float(os.getenv("CLAUDE_VERIFY_THRESHOLD", "0.90"))
 
 MAILBOX_TO_FIRMA = {
     "dxpavel@icloud.com":               "PRIVATE",
@@ -282,7 +286,7 @@ def classify_new_emails(limit: int = 20):
             # Pravidlo dalo finální TYP (LIST, ENCRYPTED, INFO/OOO, ERROR/bounce)
             if decision.get("end_pipeline") and decision.get("typ"):
                 rule_typ = decision["typ"]
-                _save_classification(email_id, firma, rule_typ, None, False, 1.0)
+                _save_classification(email_id, firma, rule_typ, None, False, 1.0, ai_source="rule")
                 _save_decision_flags(email_id, decision)
                 log.info(f"Decision: TYP={rule_typ} via rules={decision.get('matched_rules')}")
                 continue
@@ -300,14 +304,14 @@ def classify_new_emails(limit: int = 20):
 
             # 2a. Deterministická klasifikace pozvánky z kalendáře
             if subject and re.match(r'^invitation:', subject.strip(), re.IGNORECASE):
-                _save_classification(email_id, firma, "POZVÁNKA", None, False, 1.0)
+                _save_classification(email_id, firma, "POZVÁNKA", None, False, 1.0, ai_source="rule")
                 log.info(f"POZVÁNKA (pravidlo): {subject[:60]}")
                 continue
 
             # 2b. Spam pravidla — manuální override (nejvyšší priorita, i nad kontakty)
             rule = _check_rules(from_addr or "")
             if rule and rule["is_spam"]:
-                _save_classification(email_id, firma, "SPAM", None, True, 1.0)
+                _save_classification(email_id, firma, "SPAM", None, True, 1.0, ai_source="rule")
                 move_to_trash(email_id)
                 log.info(f"SPAM (pravidlo → trash): {from_addr}")
                 continue
@@ -363,7 +367,18 @@ def classify_new_emails(limit: int = 20):
                 log.info(f"task_status='ČEKÁ-NA-ODPOVĚĎ' s typ={typ} → null: {email_id}")
                 task_status = None
 
-            _save_classification(email_id, firma, typ, task_status, is_spam, confidence)
+            # M5 session 2: tracking ai_source pro budoucí Claude cascade.
+            # Pokud Llama confidence < threshold → flag 'llama_low_confidence'.
+            # Session 3 sem napojí Claude verify call (zatím jen log warning).
+            if confidence < CLAUDE_VERIFY_THRESHOLD:
+                ai_source = "llama_low_confidence"
+                log.warning(
+                    f"M5: low confidence {confidence:.0%} < {CLAUDE_VERIFY_THRESHOLD:.0%} "
+                    f"(typ={typ}, from={(from_addr or '')[:50]}) — TODO session 3: Claude verify"
+                )
+            else:
+                ai_source = "llama"
+            _save_classification(email_id, firma, typ, task_status, is_spam, confidence, ai_source=ai_source)
             _save_decision_flags(email_id, decision)
 
             # 4. Spam handling
@@ -396,7 +411,7 @@ def classify_new_emails(limit: int = 20):
                         log.info(f"SPAM (Claude potvrzen → trash, Llama {confidence:.0%}): {claude.get('reason','')}")
                     else:
                         # Claude říká NENÍ spam → překlasifikuj a nech projít normálně
-                        _save_classification(email_id, firma, typ, task_status, False, confidence)
+                        _save_classification(email_id, firma, typ, task_status, False, confidence, ai_source="claude")
                         log.info(f"SPAM zamítnut Claudem ({confidence:.0%}): {claude.get('reason','')} | {from_addr}")
 
             # 5. Auto-přesun organizačních typů ≥85%
@@ -412,15 +427,18 @@ def classify_new_emails(limit: int = 20):
             log.error(f"classify {email_id}: {e}")
 
 
-def _save_classification(email_id, firma, typ, task_status, is_spam, confidence):
+def _save_classification(email_id, firma, typ, task_status, is_spam, confidence, ai_source="llama"):
+    """Uloží klasifikaci do email_messages.
+    M5 session 2: ai_source tracking ('llama' / 'llama_low_confidence' / 'rule' / 'chroma' / 'claude'(s3)).
+    """
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
         UPDATE email_messages SET
             firma=%s, typ=%s, task_status=%s,
-            is_spam=%s, ai_confidence=%s, status='classified'
+            is_spam=%s, ai_confidence=%s, ai_source=%s, status='classified'
         WHERE id=%s
-    """, (firma, typ, task_status, is_spam, confidence, email_id))
+    """, (firma, typ, task_status, is_spam, confidence, ai_source, email_id))
     conn.commit()
     cur.close()
     conn.close()
