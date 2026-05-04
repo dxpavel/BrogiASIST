@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from classify_emails import classify_new_emails
 from notify_emails import notify_classified_emails
 from imap_actions import mark_read, move_to_trash, move_to_brogi_folder
-from telegram_callback import _email_action
+from email_actions import email_action
 from chroma_client import find_repeat_action_with_score
 from db import get_conn
 
@@ -44,7 +44,7 @@ def api_move_trash(email_id: str):
 def api_email_action(email_id: str, action: str):
     """Spustí TG akci (hotovo, spam, of, rem, note, ceka, precteno, skip) přes dashboard."""
     try:
-        _email_action(email_id, action)
+        email_action(email_id, action)
         return {"ok": True}
     except Exception as e:
         log.error(f"email action {action} {email_id}: {e}")
