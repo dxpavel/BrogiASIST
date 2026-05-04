@@ -571,6 +571,54 @@ def email_action(email_id: str, action: str):
         # H2 thread flow: ignoruj existující thread vazbu, založ úplně nový OF task
         # (re-use of action s upraveným task_status loggingem).
         return email_action(email_id, "of")
+    elif action == "thanks":
+        # M1 (BUG-010): pošle krátký deterministický reply odesílateli
+        # ("Díky, dostal jsem to. Pavel") přes SMTP s X-Brogi-Auto headerem.
+        # Decision rule self_sent (priority 5) skipne vlastní reply v ingestu.
+        from smtp_send import send_reply
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT mailbox, from_address, subject, message_id FROM email_messages WHERE id=%s",
+            (email_id,)
+        )
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            send("⚠️ Email nenalezen.")
+            do_mark_read = False
+            return
+        mailbox, from_addr, subject, msg_id = row
+        # Extrahovat čistou email adresu z 'Name <email@x>' nebo 'email@x'
+        import re
+        m = re.search(r'<([^>]+@[^>]+)>', from_addr or "")
+        to_addr = m.group(1).strip() if m else (from_addr or "").strip()
+        if not to_addr or "@" not in to_addr:
+            send(f"⚠️ Nepodařilo se extrahovat email z <code>{escape_html(from_addr or '')}</code>")
+            do_mark_read = False
+            return
+        reply_subject = subject if (subject or "").lower().startswith("re:") else f"Re: {subject or '(no subject)'}"
+        ok, sent_mid, err = send_reply(
+            account_name=mailbox,
+            to=to_addr,
+            subject=reply_subject,
+            body="Díky, dostal jsem to.\n\nPavel\n\n--\nOdesláno z BrogiASIST",
+            in_reply_to=msg_id,
+            references=msg_id,
+            x_brogi_auto="thanks",
+        )
+        if not ok:
+            send(f"⚠️ <b>Reply selhalo</b>\n<code>{escape_html(err or '')}</code>")
+            do_mark_read = False
+            return
+        # Po úspěchu: označit email jako ZPRACOVANÝ + IMAP move HOTOVO
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute(
+            "UPDATE email_messages SET task_status='HOTOVO', human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s",
+            (email_id,)
+        )
+        conn.commit(); cur.close(); conn.close()
+        imap_op = ("brogi", "HOTOVO")
+        send(f"✉️ <b>Díky reply odeslán</b> → <code>{escape_html(to_addr)}</code>")
     elif action == "skip":
         do_mark_read = False  # skip = nechej unread
 
@@ -828,6 +876,7 @@ ACTION_LABEL = {
     "of_open":   "📂 OF link odeslán",
     "of_append": "📎 Příloženo k OF tasku",
     "of_new":    "➕ Nový OF task (mimo thread)",
+    "thanks":    "✉️ Díky reply odeslán",
     "undo":      "↶ Vráceno",
 }
 

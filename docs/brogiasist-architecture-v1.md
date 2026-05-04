@@ -332,13 +332,28 @@ přes IMAP IDLE / scan), `decision_engine.evaluate_email()` matchne
 `self_sent` → `skip=True` → `classify_new_emails` ho přeskočí. Bot tedy
 neflaguje vlastní reply jako úkol.
 
-### Plánované použití (M1, příští session)
+### Implementováno 2026-05-04 (M1 MVP)
 
-- `email_actions.email_action(email_id, "reply", body=...)` zavolá `send_reply`
-  s `in_reply_to=msg.message_id` a `x_brogi_auto="reply"`
-- TG button `📅 2cal+Accept` na pozvánku → vytvoří CAL event +
-  `send_reply(...)` s ICS Accept payload + `x_brogi_auto="calendar-accept"`
-- Per-firma signing footer (volitelné v M1+)
+**Akce `thanks` v `email_actions.py`** + TG button `✉️ 2thanks (Díky)`:
+- klik → reply "Díky, dostal jsem to.\n\nPavel\n\n--\nOdesláno z BrogiASIST"
+  na sender (extracted from `from_address`) z **stejného** mailbox
+- subject: `Re: <original>`, In-Reply-To + References = original Message-ID
+- X-Brogi-Auto: `thanks`
+- po úspěchu: DB `task_status='HOTOVO' status='ZPRACOVANÝ'`, IMAP move BrogiASIST/HOTOVO
+- TG: `✉️ Díky reply odeslán → <to_addr>`
+
+TG button se zobrazí **pre-row** nad universal 3×3 jen pro TYPy kde má smysl:
+`DOKLAD, INFO, NOTIFIKACE, ÚKOL, FAKTURA, POTVRZENÍ`. Skip pro SPAM/NEWSLETTER/
+LIST/ESHOP/ENCRYPTED/POZVÁNKA (POZVÁNKA má vlastní 2cal+Accept v plánu).
+
+### Plánováno (M1 final, další session)
+
+- **`reply` action** s text input — Pavel klikne `📨 2reply`, bot otevře
+  TG conversation flow ("Napiš text odpovědi:"), Pavel pošle text, bot
+  zavolá `send_reply(body=text)`. Vyžaduje TG state machine.
+- **`cal_accept` action** pro POZVÁNKA — vytvoří kalendářní event +
+  pošle ICS Accept reply pozvateli. Standardní RFC 5546 ICS reply payload.
+- Per-firma signing footer (volitelné)
 
 ---
 

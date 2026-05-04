@@ -40,7 +40,12 @@ _ACTION_2X = {
     "of": "2of", "rem": "2rem", "cal": "2cal", "note": "2note",
     "hotovo": "2hotovo", "del": "2del", "spam": "2spam",
     "unsub": "2unsub", "skip": "2skip", "precteno": "Otevřu sám",
+    "thanks": "2thanks",
 }
+
+# M1: TYPy kde má smysl deterministický „Díky reply" (potvrzení přijetí).
+# Skip pro: SPAM, NEWSLETTER, LIST, ESHOP, ENCRYPTED, ERROR, POZVÁNKA.
+_TYP_ALLOW_THANKS = {"DOKLAD", "INFO", "NOTIFIKACE", "ÚKOL", "FAKTURA", "POTVRZENÍ"}
 
 
 def _buttons_for_typ(
@@ -87,6 +92,10 @@ def _buttons_for_typ(
 
     if typ == "ENCRYPTED":
         universal = [[_btn(lbl("👁 Otevřu sám", "precteno"), "precteno", eid)]] + universal
+
+    # M1: pre-row s 2thanks pro relevantní TYPy (deterministický „Díky" reply)
+    if typ in _TYP_ALLOW_THANKS:
+        universal = [[_btn(lbl("✉️ 2thanks (Díky)", "thanks"), "thanks", eid)]] + universal
 
     # Extra řádek s návrhem (jen pokud predikce existuje a action je v universalu).
     if suggested and sug_action and sug_action in _ACTION_2X:
