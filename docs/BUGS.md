@@ -16,7 +16,7 @@ Pravidlo: nový bug = nový záznam s ID `BUG-NNN`. Vyřešený bug = označit `
 
 **Severita:** medium (čistý code, žádný funkční dopad)
 **Zjištěno:** 2026-04-26 (větev 1, base64 přílohy session)
-**Status:** OPEN — refaktor odložen na samostatnou session
+**Status:** **FIXED 2026-05-04 commit `3507591`** — vytvořen `services/ingest/email_actions.py` (834 ř.) se sdíleným kódem. `telegram_callback.py` zredukován z 909 → 110 ř. (-88 %), zůstal jen TG-specific (offset persist + polling loop + dispatch). `api.py` import změněn na `from email_actions import email_action`. Veřejné API: `email_action()` + `email_undo()` (drop underscore). Deployed PROD.
 
 ### Popis
 Funkce `_email_action()` a její helpery (`_bridge_call`, `_mark_spam`, `_get_email_from`, `_folder_for_email`, `_calendar_for_email`, `_parse_invitation_subject`, mapy `TYP_FOLDER`, `_CAL_FROM_MAP`, `_CZ_MONTHS`, `ACTION_LABEL`) leží v `services/ingest/telegram_callback.py`, ale **nejsou** Telegram-specifické — jsou to sdílená business logika pro email akce.
