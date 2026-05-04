@@ -262,6 +262,86 @@ Scheduler logy občas vykazují `[Errno -3] Try again` (DNS) nebo `EOF in violat
 
 ---
 
+## SMTP odesílání bot replies (M1, BUG-010 fix, 2026-05-04)
+
+**Spec:** `docs/feature-specs/FEATURE-AI-CASCADE-v1.md` + BUGS.md BUG-010,
+varianta **(d) Direct SMTP** (Pavel rozhodnutí 2026-05-04).
+
+Modul: `services/ingest/smtp_send.py` — běží v scheduleru (NE v Apple Bridge).
+Důvod: scheduler má `.env` + `ACCOUNTS`, Bridge by potřeboval samostatné
+creds + launchd reload. SMTP nepotřebuje Mail.app, jen čistou Python smtplib.
+
+### API
+
+| Funkce | Účel |
+|---|---|
+| `send_reply(account_name, to, subject, body, in_reply_to=, references=, x_brogi_auto=, html=)` | Pošle email přes SMTP + APPEND kopie do Sent. Vrací `(ok, message_id, error)`. |
+| `is_brogi_auto(headers)` | True pokud email má `X-Brogi-Auto` header (= bot vlastní reply, skip ingest/klasifikace) |
+
+### SMTP_MAP per IMAP host
+
+| IMAP host | SMTP host | Port | Security |
+|---|---|---|---|
+| `imap.gmail.com` | `smtp.gmail.com` | 587 | STARTTLS (App Password) |
+| `imap.mail.me.com` | `smtp.mail.me.com` | 587 | STARTTLS (app-specific password) |
+| `imap.forpsi.com` | `smtp.forpsi.com` | 587 | STARTTLS |
+| `mail.dxpsolutions.cz` | `mail.dxpsolutions.cz` | 587 | STARTTLS (Synology) |
+| `imap.seznam.cz` | `smtp.seznam.cz` | 465 | SSL |
+
+**Creds:** stejné jako IMAP (`user` + `password` z `ACCOUNTS`). Login probe
+2026-05-04 OK pro všech 5 providerů (smoke test send → vlastní inbox).
+
+### Sent folder per host (pro APPEND)
+
+| IMAP host | Sent folder |
+|---|---|
+| `imap.gmail.com` | `[Gmail]/Sent Mail` |
+| `imap.mail.me.com` | `Sent Messages` |
+| `imap.forpsi.com` | `INBOX.Sent` |
+| `mail.dxpsolutions.cz` | `INBOX.Sent` |
+| `imap.seznam.cz` | `Sent` |
+
+`smtp_send.send_reply()` po úspěšném SMTP odeslání **APPENDuje** kopii
+do správného Sent folderu (s `\Seen` flagem) — Pavel pak reply vidí
+v Mail.app / Gmail web jako standardní odeslaný email. Pokud APPEND selže
+(timeout, no permission), reply je odeslán ale není v Sent — log warning.
+
+### Headers v outbound
+
+Bot reply má vždy:
+- `From`: account_name (např. `pavel@dxpsolutions.cz`)
+- `To`, `Subject`, `Date` (formatdate localtime)
+- `Message-ID` — generovaný `make_msgid(domain="brogiasist")`
+- `In-Reply-To` + `References` (RFC 5322 threading)
+- **`X-Brogi-Auto`** — string identifikátor akce (např. `"reply"`, `"calendar-accept"`)
+- `Auto-Submitted: auto-replied` (RFC 3834)
+
+### Skip ingest pro vlastní reply
+
+Decision rule **`self_sent`** (priority 5, sql/013):
+```json
+{"condition_type": "header",
+ "condition_value": {"header": "X-Brogi-Auto", "operator": "exists"},
+ "action_type": "end",
+ "action_value": {"skip": true, "reason": "bot_reply"}}
+```
+
+`ingest_email.py` extrahuje `X-Brogi-Auto` do `raw_payload.headers` (commit
+3304f93). Když email s tímto headerem dorazí (vlastní reply z Sent folderu
+přes IMAP IDLE / scan), `decision_engine.evaluate_email()` matchne
+`self_sent` → `skip=True` → `classify_new_emails` ho přeskočí. Bot tedy
+neflaguje vlastní reply jako úkol.
+
+### Plánované použití (M1, příští session)
+
+- `email_actions.email_action(email_id, "reply", body=...)` zavolá `send_reply`
+  s `in_reply_to=msg.message_id` a `x_brogi_auto="reply"`
+- TG button `📅 2cal+Accept` na pozvánku → vytvoří CAL event +
+  `send_reply(...)` s ICS Accept payload + `x_brogi_auto="calendar-accept"`
+- Per-firma signing footer (volitelné v M1+)
+
+---
+
 ## Backfill skripty
 
 | Skript | Účel |
