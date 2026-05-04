@@ -313,7 +313,7 @@ ssh dxpavel@10.55.2.117 "launchctl list | grep brogi && curl -sm 5 http://localh
 | BUG-006 | medium | 32 emailů s `folder='BrogiASIST/*'` v DB neexistuje na IMAPu | **FIXED 2026-05-04** (commit 7a55330+430f82a, audit + `imap_lost` flag) |
 | BUG-008 | HIGH | Apple Bridge fork() crash | **FIXED 2026-04-26** (posix_spawn) |
 | BUG-009 | HIGH | Group matching v decision_rules nematchne (data ve 2 disjoint datasets) | **FIXED 2026-04-27** (commit 6b43643) |
-| BUG-010 | MEDIUM | Mail.app AppleScript neumí custom headers (X-Brogi-Auto) | OPEN — pre-deployed infra (commit 3304f93 ingest extrakce X-Brogi-Auto), full M1 SMTP impl ~3h v další session |
+| BUG-010 | MEDIUM | Mail.app AppleScript neumí custom headers (X-Brogi-Auto) | **FIXED 2026-05-04** — (d) Direct SMTP, akce 2thanks/2reply/2cal+Accept |
 | BUG-011 | MEDIUM | JSONB `@>` case-sensitive v decision_engine | **FIXED 2026-04-27** (commit af5df96) |
 | BUG-012 | MEDIUM | iCloud IMAP `data[0]=None` → `NoneType.split` crash | **FIXED 2026-05-04** |
 | BUG-013 | MEDIUM | Llama vrací raw placeholder `<0.0-1.0>` v `confidence` → ValueError | **FIXED 2026-05-04** (commit b8e88a9) |

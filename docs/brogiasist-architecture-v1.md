@@ -346,14 +346,38 @@ TG button se zobrazí **pre-row** nad universal 3×3 jen pro TYPy kde má smysl:
 `DOKLAD, INFO, NOTIFIKACE, ÚKOL, FAKTURA, POTVRZENÍ`. Skip pro SPAM/NEWSLETTER/
 LIST/ESHOP/ENCRYPTED/POZVÁNKA (POZVÁNKA má vlastní 2cal+Accept v plánu).
 
-### Plánováno (M1 final, další session)
+### Implementováno 2026-05-04 (M1 final, plný wire)
 
-- **`reply` action** s text input — Pavel klikne `📨 2reply`, bot otevře
-  TG conversation flow ("Napiš text odpovědi:"), Pavel pošle text, bot
-  zavolá `send_reply(body=text)`. Vyžaduje TG state machine.
-- **`cal_accept` action** pro POZVÁNKA — vytvoří kalendářní event +
-  pošle ICS Accept reply pozvateli. Standardní RFC 5546 ICS reply payload.
-- Per-firma signing footer (volitelné)
+**Akce `reply` — TG text-input state machine:**
+- migrace **020** `tg_pending_replies(chat_id, email_id, started_at, ttl_minutes=30)`
+- klik `✏️ 2reply` → record do `tg_pending_replies` + TG prompt "Napiš text odpovědi"
+- Pavel pošle text → `telegram_callback._process_text_message` detekuje
+  pending state → `send_reply(body=text)` → vyčistí state
+- TTL **30 min** (po expiraci pending vyčištěn, Pavel info)
+- `/cancel` v TG → bezpečně zruší pending bez odeslání
+- po úspěchu: DB ZPRACOVANÝ + IMAP move BrogiASIST/HOTOVO
+
+**Akce `cal_accept` pro POZVÁNKA:**
+- klik `📅✉️ 2cal+Accept` → 2 kroky:
+  1. CAL event přes Bridge `/calendar/add` (analogicky 2cal akci)
+  2. text reply pozvateli "Děkuji za pozvánku, přijímám" (cal-accept marker)
+- Plná **RFC 5546 ICS Accept** payload (Method:REPLY + PARTSTAT=ACCEPTED)
+  zatím **NE** — odložen, vyžaduje parsovat ICS z původního invitation body.
+  MVP text reply funguje pro lidsky zpracované pozvánky.
+
+**TG buttons v `notify_emails._buttons_for_typ`:**
+- pre-row pro DOKLAD/INFO/NOTIFIKACE/ÚKOL/FAKTURA/POTVRZENÍ:
+  `[✉️ 2thanks] [✏️ 2reply]`
+- pre-row pro POZVÁNKA: `[📅✉️ 2cal+Accept]`
+- universal 3×3 zachován pod tím
+
+### Plánováno (volitelné, low priority)
+
+- **Plný RFC 5546 ICS Accept** — parsovat původní invitation, generovat
+  Method:REPLY ICS payload + content-type: text/calendar; method=REPLY
+- **Per-firma signing footer** (DXP / soukromé / mBank …)
+- **Reply text z Llama** (bot nabídne navržený text, Pavel ho potvrdí
+  nebo upraví) — souvisí s M5 Claude verify cascade
 
 ---
 

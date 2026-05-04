@@ -448,18 +448,16 @@ docker exec -w /app brogiasist-scheduler python3 test_decision.py
 
 **Severita:** MEDIUM (blokuje D3+ implementaci `/calendar/reply` + `/mail/send`)
 **Zjištěno:** 2026-04-26 (blocker D3 audit)
-**Status:** **PARTIALLY FIXED 2026-05-04** — Pavel rozhodl (d) Direct SMTP. Implementováno:
-- `services/ingest/smtp_send.py` — `send_reply()` přes SMTP s X-Brogi-Auto + APPEND do Sent (commit TBD)
-- `services/ingest/ingest_email.py` — extrakce X-Brogi-Auto headeru (commit 3304f93)
-- decision_rules `self_sent` priority 5 — already enabled na PROD
+**Status:** **FIXED 2026-05-04** — Pavel rozhodl (d) Direct SMTP. Plná implementace:
+- `services/ingest/smtp_send.py` — `send_reply()` přes SMTP s X-Brogi-Auto + APPEND do Sent (Gmail auto-copy)
+- `services/ingest/ingest_email.py` — extrakce X-Brogi-Auto headeru
+- decision_rules `self_sent` priority 5 → skip ingest pro vlastní replies
 - SMTP probe 5/5 providers OK (Gmail/iCloud/Forpsi/Synology/Seznam)
-- Architecture doc updated (sekce "SMTP odesílání bot replies")
-
-**Zbývá pro plné M1 (další session ~1 h):**
-- wire `send_reply` do `email_actions.py` (nová akce `reply`)
-- TG button `📨 2reply` v `notify_emails.py`
-- ICS calendar Accept/Decline reply payload (`/calendar/reply` ekvivalent)
-- end-to-end test: Pavel klikne 2reply v TG → bot pošle reply → ověř že nedostane vlastní reply zpět jako úkol
+- Akce **`thanks`** — deterministický „Díky" reply (commit 548647a)
+- Akce **`reply`** — TG text-input state machine (migrace 020, TTL 30min, `/cancel` support)
+- Akce **`cal_accept`** — CAL event + text reply pro POZVÁNKA (plný RFC 5546 ICS Accept odložen)
+- TG buttony: `✉️ 2thanks`, `✏️ 2reply` pre-row pro DOKLAD/INFO/NOTIFIKACE/ÚKOL/FAKTURA/POTVRZENÍ; `📅✉️ 2cal+Accept` pre-row pro POZVÁNKA
+- Architecture doc kompletní
 
 ### Popis
 Per `docs/brogiasist-semantics-v1.md` sekce 13: bot odesílá Accept/Decline

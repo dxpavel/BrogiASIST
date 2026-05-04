@@ -619,6 +619,104 @@ def email_action(email_id: str, action: str):
         conn.commit(); cur.close(); conn.close()
         imap_op = ("brogi", "HOTOVO")
         send(f"✉️ <b>Díky reply odeslán</b> → <code>{escape_html(to_addr)}</code>")
+    elif action == "reply":
+        # M1 final: Spustí TG text-input flow.
+        # Pavel klikne 2reply → záznam do tg_pending_replies (chat_id pending email_id)
+        # → bot pošle TG zprávu "Napiš text odpovědi"
+        # → Pavel pošle TG text message → telegram_callback.process_message
+        #   detekuje pending state → zavolá smtp_send.send_reply(body=text)
+        #   → vyčistí pending state.
+        import os as _os
+        chat_id = int(_os.getenv("TELEGRAM_CHAT_ID", "0"))
+        if not chat_id:
+            send("⚠️ TELEGRAM_CHAT_ID není nastaven, reply state machine nelze.")
+            do_mark_read = False
+            return
+        try:
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO tg_pending_replies (chat_id, email_id, started_at, ttl_minutes)
+                VALUES (%s, %s, NOW(), 30)
+                ON CONFLICT (chat_id) DO UPDATE
+                    SET email_id=EXCLUDED.email_id,
+                        started_at=NOW(),
+                        ttl_minutes=30
+            """, (chat_id, email_id))
+            conn.commit(); cur.close(); conn.close()
+        except Exception as e:
+            log.error(f"reply state insert failed: {e}")
+            send(f"⚠️ DB chyba: <code>{escape_html(str(e))}</code>")
+            do_mark_read = False
+            return
+        send(
+            "✏️ <b>Napiš text odpovědi</b>\n"
+            f"<i>Email id: <code>{email_id}</code></i>\n"
+            "<i>Příští TG text message bude poslán jako reply (TTL 30 min).</i>\n"
+            "<i>Pro zrušení: pošli text <code>/cancel</code>.</i>"
+        )
+        do_mark_read = False
+        return
+    elif action == "cal_accept":
+        # M1 final: pro POZVÁNKA — vytvoří CAL event PŘES Bridge +
+        # pošle text reply pozvateli "Děkuji za pozvánku, přijímám".
+        # Plný RFC 5546 ICS Accept (parsovat původní invitation body
+        # a echovat Method:REPLY+PARTSTAT=ACCEPTED) odložen na další session.
+        from smtp_send import send_reply
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT subject, from_address, body_text, mailbox, message_id FROM email_messages WHERE id=%s", (email_id,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            send("⚠️ Email nenalezen.")
+            do_mark_read = False
+            return
+        subject, from_addr, body, mailbox, msg_id = row
+        # 1. CAL event přes Bridge (existující /calendar/add)
+        cal_name = _calendar_for_email(from_addr)
+        evt_name, start_iso, end_iso, all_day = _parse_invitation_subject(subject or "")
+        ok_cal, resp_cal = _bridge_call_full("/calendar/add", {
+            "name": evt_name,
+            "notes": f"Od: {from_addr}\n\n{body or ''}"[:1000],
+            "calendar": cal_name,
+            "start_iso": start_iso,
+            "end_iso": end_iso,
+            "all_day": all_day,
+        }, "CAL", str(email_id))
+        if not ok_cal:
+            return
+        cal_uid = (resp_cal or {}).get("id")
+        # 2. Reply pozvateli (text)
+        import re as _re
+        m = _re.search(r'<([^>]+@[^>]+)>', from_addr or "")
+        to_addr = m.group(1).strip() if m else (from_addr or "").strip()
+        if to_addr and "@" in to_addr:
+            reply_subject = subject if (subject or "").lower().startswith("re:") else f"Re: {subject or ''}"
+            ok_smtp, _, err = send_reply(
+                account_name=mailbox,
+                to=to_addr,
+                subject=reply_subject,
+                body=f"Děkuji za pozvánku, přijímám.\n\nUdálost přidána do mého kalendáře.\n\nPavel\n\n--\nOdesláno z BrogiASIST",
+                in_reply_to=msg_id,
+                references=msg_id,
+                x_brogi_auto="cal-accept",
+            )
+            if ok_smtp:
+                send(f"📅✉️ <b>Pozvánka přijata + reply odeslán</b> → <code>{escape_html(to_addr)}</code>")
+            else:
+                send(f"📅 <b>CAL přidán</b>, ⚠️ reply selhal: <code>{escape_html(err or '')}</code>")
+        else:
+            send("📅 <b>CAL přidán</b> (reply skip, neumím extrahovat from)")
+        # DB update
+        conn = get_conn(); cur = conn.cursor()
+        if cal_uid:
+            cur.execute(
+                "UPDATE email_messages SET task_status='→CAL', cal_event_id=%s, human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s",
+                (cal_uid, email_id),
+            )
+        else:
+            cur.execute("UPDATE email_messages SET task_status='→CAL', human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s", (email_id,))
+        conn.commit(); cur.close(); conn.close()
+        imap_op = ("brogi", "HOTOVO")
     elif action == "skip":
         do_mark_read = False  # skip = nechej unread
 
@@ -877,6 +975,8 @@ ACTION_LABEL = {
     "of_append": "📎 Příloženo k OF tasku",
     "of_new":    "➕ Nový OF task (mimo thread)",
     "thanks":    "✉️ Díky reply odeslán",
+    "reply":     "✏️ Čekám na text odpovědi",
+    "cal_accept":"📅✉️ Přijato + reply",
     "undo":      "↶ Vráceno",
 }
 
