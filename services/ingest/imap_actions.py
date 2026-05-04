@@ -21,6 +21,40 @@ TRASH_MAP = {
 
 BROGI_PREFIX = "BrogiASIST"
 
+# BUG-004 fix: Forpsi + Synology Cyrus IMAP používají strukturu
+# `INBOX.foo.bar` místo `foo/bar`. Per-host mapping (sjednocené s
+# ensure_brogi_folders.py).
+DOTTED_HOSTS = {"imap.forpsi.com", "mail.dxpsolutions.cz"}
+
+
+def _brogi_path(host: str, subfolder: str) -> str:
+    """Vrátí správný IMAP folder path pro BrogiASIST hierarchii dle hostu."""
+    if host in DOTTED_HOSTS:
+        return f"INBOX.BrogiASIST.{subfolder}"
+    return f"BrogiASIST/{subfolder}"
+
+
+def _folder_exists(m: imaplib.IMAP4, folder: str) -> bool:
+    """BUG-004/005 pre-flight: ověří že IMAP složka existuje (m.list pattern)."""
+    try:
+        typ, raw = m.list(pattern=folder)
+    except Exception:
+        # Některé servery nepodporují pattern arg — zkus celý list
+        typ, raw = m.list()
+    if typ != "OK" or not raw:
+        return False
+    target = folder.strip().strip('"')
+    for line in raw:
+        s = line.decode() if isinstance(line, bytes) else line
+        try:
+            name = s.rsplit(" ", 1)[-1].strip().strip('"')
+            if name == target:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 # Mapování typ emailu → složka
 TYP_FOLDER = {
     "NOTIFIKACE": "NOTIFIKACE",
@@ -55,13 +89,21 @@ def _imap_folder(name: str) -> str:
 
 
 def _uid_move(m: imaplib.IMAP4, uid: str, dest: str):
-    """Přesune zprávu do dest. Fallback na COPY+DELETE pokud MOVE není podporováno."""
+    """Přesune zprávu do dest. Fallback na COPY+DELETE pokud MOVE není podporováno.
+
+    BUG-005 fix: pokud MOVE i COPY selžou (např. cíl neexistuje), vyhazuje
+    RuntimeError místo silent fail. Volající nesmí poté psát do DB folder.
+    """
     d = _imap_folder(dest)
     res = m.uid("MOVE", uid, d)
-    if res[0] != "OK":
-        m.uid("COPY", uid, d)
-        m.uid("STORE", uid, "+FLAGS", "\\Deleted")
-        m.expunge()
+    if res[0] == "OK":
+        return
+    # Fallback COPY + STORE \Deleted + EXPUNGE
+    res_c = m.uid("COPY", uid, d)
+    if res_c[0] != "OK":
+        raise RuntimeError(f"_uid_move failed: MOVE+COPY oba selhaly pro dest={dest} (response={res_c})")
+    m.uid("STORE", uid, "+FLAGS", "\\Deleted")
+    m.expunge()
 
 
 def _ensure_folder(m: imaplib.IMAP4, folder: str):
@@ -124,7 +166,11 @@ def mark_read(email_id) -> bool:
 
 
 def move_to_trash(email_id) -> bool:
-    """Přesune email do Trash (spam)."""
+    """Přesune email do Trash (spam).
+
+    BUG-005 fix: _uid_move raise při fail → DB se neupdatuje pokud Trash
+    neexistuje nebo MOVE/COPY selže.
+    """
     info = get_imap_info(email_id)
     if not info:
         return False
@@ -149,7 +195,13 @@ def move_to_trash(email_id) -> bool:
 
 
 def move_to_brogi_folder(email_id, subfolder: str) -> bool:
-    """Přesune email do BrogiASIST/{subfolder}."""
+    """Přesune email do BrogiASIST hierarchie.
+
+    BUG-004 fix: per-host folder syntax (Forpsi/Synology Cyrus → INBOX.BrogiASIST.X,
+    Gmail/iCloud → BrogiASIST/X) místo hardcoded slash.
+    BUG-005 fix: pre-flight check existence + _uid_move raise při fail →
+    pokud cíl neexistuje (i po _ensure_folder), DB se NEUPDATUJE → DB nelže.
+    """
     info = get_imap_info(email_id)
     if not info:
         return False
@@ -159,11 +211,23 @@ def move_to_brogi_folder(email_id, subfolder: str) -> bool:
     acc = _account(mailbox)
     if not acc:
         return False
-    dest = f"{BROGI_PREFIX}/{subfolder}"
+    host = acc.get("host", "")
+    # Speciální případ: undo vrací email do INBOX → bez prefixu
+    if subfolder == "INBOX":
+        dest = "INBOX"
+    else:
+        dest = _brogi_path(host, subfolder)
     try:
         m = connect(acc)
-        _ensure_folder(m, dest)
+        # BUG-004: ensure + verify
+        if dest != "INBOX":
+            _ensure_folder(m, dest)
+            if not _folder_exists(m, dest):
+                m.logout()
+                log.error(f"move_to_brogi REFUSED: dest {dest!r} neexistuje na {host} ani po _ensure_folder ({mailbox} uid={imap_uid})")
+                return False
         m.select(folder or "INBOX")
+        # BUG-005: _uid_move raise při fail → DB se NEUPDATUJE
         _uid_move(m, str(imap_uid), dest)
         m.logout()
         _update_db_folder(email_id, dest, mark_read=True)

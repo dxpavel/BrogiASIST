@@ -158,7 +158,7 @@ docker exec brogi_postgres psql -U brogi -d assistance -c "\d attachments"
 
 **Severita:** HIGH (ztráta emailů — netušíme kde reálně skončily)
 **Zjištěno:** 2026-04-26 (větev 1, backfill diagnostika)
-**Status:** **MITIGATED 2026-04-26** — folder hierarchie vytvořena na všech 9 účtech přes `services/ingest/ensure_brogi_folders.py`. Trvalý fix v `imap_actions` zůstává OPEN (per-host mapping + pre-flight check existence cíle).
+**Status:** **FIXED 2026-05-04 (commit TBD)** — `imap_actions.py` přidán per-host `_brogi_path(host, sub)` (Forpsi/Synology Cyrus → `INBOX.BrogiASIST.X`, Gmail/iCloud/Seznam → `BrogiASIST/X`) + `_folder_exists()` pre-flight check. `move_to_brogi_folder` ověřuje existenci cíle PŘED `_uid_move` a vrací False bez DB update pokud cíl chybí. `ensure_brogi_folders.py` zůstává jako bootstrap pro nové účty.
 
 ### Popis
 Kód `imap_actions.move_to_brogi_folder` cílí MOVE na `BrogiASIST/<subfolder>` (Gmail/iCloud syntaxe). Pro Forpsi by měl být folder s prefixem `INBOX.` a separátorem `.` — tedy `INBOX.BrogiASIST.HOTOVO`.
@@ -199,7 +199,7 @@ m.list()  # vypsat
 
 **Severita:** HIGH (DB lže — `folder` říká kde email JE, ale on tam není)
 **Zjištěno:** 2026-04-26 (větev 1, backfill diagnostika; přímý důsledek BUG-004)
-**Status:** OPEN
+**Status:** **FIXED 2026-05-04 (commit TBD)** — `_uid_move` nyní raise `RuntimeError` pokud MOVE i COPY selžou (žádný silent fallthrough). Try/except v `move_to_brogi_folder` / `move_to_trash` chytí výjimku → `_update_db_folder` se NEZAVOLÁ → DB zůstává konzistentní. Plus pre-flight check existence cíle v `move_to_brogi_folder` (BUG-004 fix).
 
 ### Popis
 V `imap_actions.move_to_brogi_folder` (a podobně `move_to_trash`):
