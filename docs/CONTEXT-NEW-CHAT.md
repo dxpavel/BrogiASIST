@@ -1,8 +1,8 @@
 ---
 Název: CONTEXT-NEW-CHAT
 Soubor: docs/CONTEXT-NEW-CHAT.md
-Verze: 8.2 (v2.0 + BUG-004/005/006 FIXED + BUG-010 prep)
-Poslední aktualizace: 2026-05-04 (noční)
+Verze: 8.3 (M1 final + BUG-010 FIXED — Zero open BUGs)
+Poslední aktualizace: 2026-05-04 (pozdní noc)
 Popis: Kontext pro nový chat — stav, cesty, problémy
 ---
 
@@ -39,6 +39,17 @@ Popis: Kontext pro nový chat — stav, cesty, problémy
 - **BUG-006** FIXED — audit 34 PROD emailů, 32 flagged `imap_lost=TRUE`
 - **BUG-010 prep** — `X-Brogi-Auto` header v ingest, full M1 v další session
 - **Migrace 019** `imap_lost`
+
+**Late night — M1 final + BUG-010 FIXED:**
+- **`smtp_send.py`** modul — SMTP klient s SMTP_MAP/SENT_MAP per provider
+- **5/5 SMTP probe OK** (Gmail/iCloud/Forpsi/Synology/Seznam)
+- **Akce `thanks`** — deterministický „Díky" reply
+- **Akce `reply`** — TG text-input state machine (migrace 020 `tg_pending_replies`)
+- **Akce `cal_accept`** — POZVÁNKA: CAL event + text reply pozvateli
+- **TG buttony**: DOKLAD/INFO/.../FAKTURA pre-row `[✉️ 2thanks] [✏️ 2reply]`,
+  POZVÁNKA pre-row `[📅✉️ 2cal+Accept]`
+- **Migrace 020** `tg_pending_replies` (chat_id PK, TTL 30min)
+- **🎉 Zero open BUGs.**
 
 ## Příští session = M5 session 2 (Llama refinement)
 

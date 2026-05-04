@@ -1455,6 +1455,74 @@ Sniff test po napsání SQL s parametry: spočítej `%s` vs `%[^s]` a ujisti se,
 
 ---
 
+## 53. TG text-input state machine — pending state v DB s TTL (2026-05-04, M1 final)
+
+**Problém:** Pavel klikne `✏️ 2reply` v TG — bot potřebuje od něj text
+odpovědi, ne další kliknutí. Telegram callback loop ale dosud zpracovával
+**jen `callback_query`** (button kliky), ne `message.text` (volné zprávy).
+Plus: jak rozlišit "Pavel napsal text protože odpovídá na 2reply" vs
+"Pavel napsal něco jen tak"?
+
+**Řešení (commit dcf6626):** stateful pattern přes DB tabulku
+`tg_pending_replies(chat_id PK, email_id, started_at, ttl_minutes)`:
+1. Klik `2reply` → `INSERT ON CONFLICT DO UPDATE` (per chat 1 pending naráz)
+   + TG prompt "Napiš text odpovědi"
+2. Polling loop dostane `update.message.text` → `_process_text_message`
+   načte `tg_pending_replies` pro chat_id
+3. Pokud existuje + není po TTL → vezme text, zavolá `send_reply(body=text)`,
+   `DELETE` pending
+4. Speciální: `text == '/cancel'` → bezpečně zruší pending bez odeslání
+5. TTL check (default 30 min) — po expiraci bot info "Reply timeout, smazáno"
+
+**Pravidlo pro multi-step TG flow:**
+- Per-chat state v DB (ne v memory — scheduler restart by ho ztratil)
+- Vždy TTL + cleanup při expiraci
+- Vždy `/cancel` escape hatch (uživatelé klikají omylem)
+- `INSERT ON CONFLICT DO UPDATE` umožňuje druhý klik 2reply přepsat
+  předchozí (Pavel rozhodl změnit cíl — common)
+- `update.message.text` se zpracovává **jen** pokud chat má pending state
+  (jinak ignore — Pavel by mohl psát komandy / poznámky bez akce)
+
+---
+
+## 54. Gmail SMTP auto-kopíruje Sent label — IMAP APPEND je redundant (2026-05-04, M1)
+
+**Problém:** Po implementaci `smtp_send.py` smoke test:
+```
+[INFO] smtp_send OK: dxpavel@gmail.com → dxpavel@gmail.com
+[ERROR] APPEND failed (dxpavel@gmail.com → [Gmail]/Sent Mail):
+        APPEND command error: BAD [b'Could not parse command']
+```
+Email odeslán OK, ale APPEND do `[Gmail]/Sent Mail` selhal.
+
+**Příčina:** Gmail nepodporuje IMAP APPEND do `[Gmail]/Sent Mail` —
+historicky chráněný systémový label, server vrací `BAD`. **NENÍ to chyba**:
+Gmail SMTP automaticky **kopíruje odeslaný email do Sent labelu** sám
+(server-side feature — kontrast s naprostou většinou ostatních IMAP
+serverů, kde klient APPENDuje).
+
+**Fix (commit 48a5f03):**
+```python
+SENT_MAP = {
+    "imap.gmail.com":       None,  # Gmail auto-copy do Sent — APPEND skip
+    "imap.mail.me.com":     "Sent Messages",
+    "imap.forpsi.com":      "INBOX.Sent",
+    "mail.dxpsolutions.cz": "INBOX.Sent",
+    "imap.seznam.cz":       "Sent",
+}
+```
++ helper vrátí `True` (no-op success) pro `None` — žádný warning.
+
+**Pravidlo:** Při SMTP integraci s vícero providery vždy zjisti **per-provider
+chování pro Sent folder**:
+- Gmail: server-side auto-copy (APPEND zbytečný + selže)
+- iCloud, Forpsi, Synology Cyrus, Seznam, Outlook: client musí APPEND
+  (jinak email v "Sent" v Mail.app nebude)
+
+Nepředpokládej "všichni stejně".
+
+---
+
 ## Co ještě nebylo řešeno / TODO
 
 - **iMessage ingest** — bridge endpoint naplánován, ingest skript a DB tabulka chybí

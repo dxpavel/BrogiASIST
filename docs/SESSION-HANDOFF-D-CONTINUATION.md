@@ -14,6 +14,51 @@ Popis: Handoff pro pokračování blockeru D z branch `2`.
 
 # BrogiASIST — Session Handoff (D continuation, v2.0)
 
+## ⚠️ UPDATE 2026-05-04 (pozdní noc, ~19:30) — M1 final + BUG-010 FIXED
+
+**🎉 ZERO OPEN BUGS po dnešním marathonu.**
+
+**HOTOVO v této finální fázi:**
+- **`smtp_send.py` modul** — `send_reply(account, to, subject, body, in_reply_to,
+  references, x_brogi_auto, html)` přes SMTP s X-Brogi-Auto header + APPEND
+  do Sent (Gmail výjimka — auto-copy) (commit 99add56+48a5f03)
+- **SMTP probe 5/5 providerů OK** — Gmail/iCloud/Forpsi/Synology/Seznam
+- **Akce `thanks`** — deterministický „Díky, dostal jsem to. Pavel" reply
+  (commit 548647a)
+- **Akce `reply`** — TG text-input state machine s migrací 020
+  `tg_pending_replies(chat_id, email_id, ttl=30min)` + `/cancel` (commit dcf6626)
+- **Akce `cal_accept`** — pro POZVÁNKA: CAL event + text reply pozvateli
+  (plný RFC 5546 ICS Accept odložen) (commit dcf6626)
+- **TG buttony** v notify_emails:
+  - DOKLAD/INFO/NOTIFIKACE/ÚKOL/FAKTURA/POTVRZENÍ pre-row: `[✉️ 2thanks] [✏️ 2reply]`
+  - POZVÁNKA pre-row: `[📅✉️ 2cal+Accept]`
+
+**Architektonické rozhodnutí:** SMTP send v scheduleru, NE v Apple Bridge
+(scheduler má .env + ACCOUNTS, Bridge by potřeboval samostatné creds).
+SMTP nepotřebuje Mail.app, čistá Python smtplib.
+
+**Lekce #53** (TG text-input state machine pattern: per-chat DB state + TTL
++ /cancel + INSERT ON CONFLICT DO UPDATE).
+**Lekce #54** (Gmail nepodporuje IMAP APPEND do Sent — server kopíruje sám).
+
+**PROD stav:**
+- branch `2`, last commit `dcf6626`
+- Migrace **016, 017, 018, 019, 020** aplikované
+- Všech 5 SMTP providerů login OK + smoke test live (Gmail self-send,
+  msgid persisted)
+
+**Pavlův test plán** (až přijde reálný email):
+1. DOKLAD/INFO email → klik `✉️ 2thanks` → bot pošle „Díky" reply
+2. DOKLAD/INFO email → klik `✏️ 2reply` → napiš text v TG → bot pošle
+3. Pošli `/cancel` po 2reply → pending zrušen
+4. POZVÁNKA → klik `📅✉️ 2cal+Accept` → CAL event + reply pozvateli
+
+**Příští session = M5 session 3 (Claude verify cascade ~6h)** — viz spec
+`docs/feature-specs/FEATURE-AI-CASCADE-v1.md` sekce 4 + 9. Kalibrační data
+v `/admin` AI Source distribuce za 24-72h sběru.
+
+---
+
 ## ⚠️ UPDATE 2026-05-04 (noční, ~19:00) — BUG-004/005/006 cleanup + BUG-010 prep
 
 **HOTOVO:**
