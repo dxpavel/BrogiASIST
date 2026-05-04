@@ -519,6 +519,33 @@ async def api_decision_rule_toggle(rule_id: int):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class DecisionRuleReorder(BaseModel):
+    ids: list[int]
+
+
+@app.patch("/api/decision-rules/reorder")
+async def api_decision_rule_reorder(payload: DecisionRuleReorder):
+    """P2: drag&drop reorder — přepočítá priority na 10, 20, 30, ...
+    podle pořadí ID v payloadu (top → bottom v UI tabulce)."""
+    if not payload.ids:
+        raise HTTPException(status_code=400, detail="ids prázdný")
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        new_priorities = {}
+        for idx, rid in enumerate(payload.ids):
+            new_prio = (idx + 1) * 10
+            cur.execute("UPDATE decision_rules SET priority=%s, updated_at=NOW() WHERE id=%s RETURNING id",
+                        (new_prio, rid))
+            if cur.fetchone():
+                new_priorities[rid] = new_prio
+        conn.commit()
+        conn.close()
+        return {"ok": True, "priorities": new_priorities}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.delete("/api/decision-rules/{rule_id}")
 async def api_decision_rule_delete(rule_id: int):
     try:

@@ -99,6 +99,38 @@
   background: var(--bg, var(--surface));
   display: flex; gap: 8px; justify-content: flex-end;
 }
+
+/* P1: filter chips */
+.dr-chip {
+  display: inline-block; padding: 3px 10px; border-radius: 12px;
+  background: var(--bg); border: 1px solid var(--border2);
+  color: var(--text-muted); font-size: 10px; cursor: pointer;
+  font-family: var(--font-mono); user-select: none;
+  transition: .12s;
+}
+.dr-chip:hover { border-color: var(--primary-d); color: var(--text); }
+.dr-chip-active {
+  background: var(--primary-d); color: #000; border-color: var(--primary-d);
+  font-weight: 700;
+}
+
+/* P2: drag handle + drag states */
+.dr-drag {
+  cursor: grab; color: var(--text-muted); font-size: 13px; padding: 0 4px;
+  user-select: none;
+}
+.dr-drag:hover { color: var(--text); }
+tr.dr-dragging { opacity: 0.4; }
+tr.dr-drag-over { border-top: 2px solid var(--primary-d); }
+
+/* P3: inline priority edit */
+.dr-prio-edit {
+  width: 40px; text-align: center; background: var(--bg);
+  border: 1px solid var(--primary-d); border-radius: 3px;
+  color: var(--text); font-family: var(--font-mono); font-size: 11px;
+  font-weight: 700; padding: 1px 2px; outline: none;
+}
+.dr-prio.editable:hover { background: var(--bg); cursor: text; }
 {% endblock %}
 
 {% block content %}
@@ -111,13 +143,28 @@
   </h2>
   <p style="color:var(--muted);font-size:10px;margin:0 0 8px 0">
     Engine pravidla se aplikují v pořadí <b>priority ASC</b> před AI klasifikací (Llama).
-    Detail v <code>docs/brogiasist-semantics-v1.md</code>.
+    Tip: <i>táhni řádek za <code>≡</code> pro změnu pořadí · klik na priority pro inline edit.</i>
   </p>
+
+  {# P1: filter chips podle condition_type #}
+  <div class="filter-bar" style="margin-bottom:8px">
+    <span class="dr-chip dr-chip-active" data-ct="" onclick="drFilterCt(this)">Vše</span>
+    <span class="dr-chip" data-ct="header" onclick="drFilterCt(this)">header</span>
+    <span class="dr-chip" data-ct="subject" onclick="drFilterCt(this)">subject</span>
+    <span class="dr-chip" data-ct="body" onclick="drFilterCt(this)">body</span>
+    <span class="dr-chip" data-ct="group" onclick="drFilterCt(this)">group</span>
+    <span class="dr-chip" data-ct="chroma" onclick="drFilterCt(this)">chroma</span>
+    <span class="dr-chip" data-ct="sender" onclick="drFilterCt(this)">sender</span>
+    <span class="dr-chip" data-ct="ai_fallback" onclick="drFilterCt(this)">ai_fallback</span>
+    <input id="drSearch" type="text" placeholder="Hledat v rule_name…" oninput="drApplyFilter()" style="margin-left:auto">
+    <span class="fcount" id="drVisible"></span>
+  </div>
 
   {% if decision_rules %}
   <table class="dr-table">
     <thead>
       <tr>
+        <th style="width:18px"></th>
         <th class="dr-prio">#</th>
         <th style="width:140px">Název</th>
         <th style="width:90px">Cond</th>
@@ -130,8 +177,9 @@
     </thead>
     <tbody id="drBody">
     {% for r in decision_rules %}
-    <tr data-id="{{ r.id }}" data-rule='{{ r|tojson }}'>
-      <td class="dr-prio">{{ r.priority }}</td>
+    <tr data-id="{{ r.id }}" data-ct="{{ r.condition_type }}" data-rname="{{ r.rule_name }}" data-rule='{{ r|tojson }}' draggable="true">
+      <td class="dr-drag" title="Táhni pro změnu pořadí">≡</td>
+      <td class="dr-prio editable" onclick="drEditPrio(this, {{ r.id }})">{{ r.priority }}</td>
       <td class="dr-name">{{ r.rule_name }}</td>
       <td><span class="dr-ctype dr-ctype-{{ r.condition_type }}">{{ r.condition_type }}</span></td>
       <td class="dr-cond" title="{{ r.condition_value }}">{{ r.condition_value }}</td>
@@ -378,6 +426,154 @@ async function drDelete(id, name){
   const r = await fetch(`/api/decision-rules/${id}`, {method:'DELETE'});
   if(!r.ok){ alert('Delete selhalo'); return; }
   location.reload();
+}
+
+// P1: Filter chips + search ====================================
+let _drFilterCt = '';
+function drFilterCt(el){
+  document.querySelectorAll('.dr-chip').forEach(c => c.classList.remove('dr-chip-active'));
+  el.classList.add('dr-chip-active');
+  _drFilterCt = el.dataset.ct || '';
+  drApplyFilter();
+}
+function drApplyFilter(){
+  const search = (document.getElementById('drSearch').value || '').toLowerCase().trim();
+  const rows = document.querySelectorAll('#drBody tr');
+  let visible = 0;
+  rows.forEach(tr => {
+    const ct = tr.dataset.ct || '';
+    const name = (tr.dataset.rname || '').toLowerCase();
+    const ctOk = !_drFilterCt || ct === _drFilterCt;
+    const sOk = !search || name.includes(search);
+    const show = ctOk && sOk;
+    tr.style.display = show ? '' : 'none';
+    if(show) visible++;
+  });
+  document.getElementById('drVisible').textContent = visible + ' viditelných';
+}
+
+// P3: Inline priority edit ====================================
+function drEditPrio(td, id){
+  if(td.querySelector('input')) return;  // už editujeme
+  const orig = td.textContent.trim();
+  const inp = document.createElement('input');
+  inp.type = 'number'; inp.min = 1; inp.max = 999;
+  inp.value = orig; inp.className = 'dr-prio-edit';
+  td.textContent = '';
+  td.appendChild(inp);
+  inp.focus(); inp.select();
+
+  const save = async () => {
+    const newVal = parseInt(inp.value, 10);
+    if(isNaN(newVal) || newVal < 1 || newVal > 999){
+      td.textContent = orig;
+      return;
+    }
+    if(String(newVal) === orig){
+      td.textContent = orig;
+      return;
+    }
+    // PUT — potřebuje plný payload, použijeme data-rule z TR
+    const tr = td.closest('tr');
+    const rule = JSON.parse(tr.dataset.rule);
+    let condVal, actVal;
+    try {
+      condVal = JSON.parse(rule.condition_value);
+      actVal  = JSON.parse(rule.action_value);
+    } catch(e) {
+      td.textContent = orig; alert('JSON parse chyba: ' + e.message); return;
+    }
+    const payload = {
+      priority: newVal,
+      rule_name: rule.rule_name,
+      condition_type: rule.condition_type,
+      condition_value: condVal,
+      action_type: rule.action_type,
+      action_value: actVal,
+      enabled: rule.enabled,
+      description: rule.description || null,
+    };
+    const r = await fetch(`/api/decision-rules/${id}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if(!r.ok){
+      const t = await r.text();
+      alert(`Update selhal ${r.status}: ${t}`);
+      td.textContent = orig;
+      return;
+    }
+    td.textContent = newVal;
+    // Uložit do data-rule aby další edit nepoužíval starou prioritu
+    rule.priority = newVal;
+    tr.dataset.rule = JSON.stringify(rule);
+  };
+
+  inp.addEventListener('blur', save);
+  inp.addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ inp.blur(); }
+    if(e.key === 'Escape'){ td.textContent = orig; }
+  });
+}
+
+// P2: Drag&drop priority reorder ====================================
+let _drDragSrc = null;
+document.addEventListener('DOMContentLoaded', () => {
+  const body = document.getElementById('drBody');
+  if(!body) return;
+  body.addEventListener('dragstart', e => {
+    const tr = e.target.closest('tr');
+    if(!tr) return;
+    _drDragSrc = tr;
+    tr.classList.add('dr-dragging');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  body.addEventListener('dragend', e => {
+    const tr = e.target.closest('tr');
+    if(tr) tr.classList.remove('dr-dragging');
+    document.querySelectorAll('tr.dr-drag-over').forEach(r => r.classList.remove('dr-drag-over'));
+  });
+  body.addEventListener('dragover', e => {
+    e.preventDefault();
+    const tr = e.target.closest('tr');
+    if(!tr || tr === _drDragSrc) return;
+    document.querySelectorAll('tr.dr-drag-over').forEach(r => r.classList.remove('dr-drag-over'));
+    tr.classList.add('dr-drag-over');
+  });
+  body.addEventListener('drop', async e => {
+    e.preventDefault();
+    const target = e.target.closest('tr');
+    if(!target || !_drDragSrc || target === _drDragSrc) return;
+    body.insertBefore(_drDragSrc, target);
+    target.classList.remove('dr-drag-over');
+    await drSaveOrder();
+  });
+});
+
+async function drSaveOrder(){
+  const ids = Array.from(document.querySelectorAll('#drBody tr')).map(tr => parseInt(tr.dataset.id, 10));
+  const r = await fetch('/api/decision-rules/reorder', {
+    method:'PATCH', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ids: ids}),
+  });
+  if(!r.ok){
+    alert('Reorder selhal — reload pro vrácení původního pořadí');
+    return;
+  }
+  // Update zobrazené priority — přepočítaly se 10/20/30...
+  const data = await r.json();
+  if(data.priorities){
+    document.querySelectorAll('#drBody tr').forEach(tr => {
+      const id = parseInt(tr.dataset.id, 10);
+      const newPrio = data.priorities[id];
+      if(newPrio){
+        tr.querySelector('.dr-prio').textContent = newPrio;
+        const rule = JSON.parse(tr.dataset.rule);
+        rule.priority = newPrio;
+        tr.dataset.rule = JSON.stringify(rule);
+      }
+    });
+  }
 }
 
 function applyFilters(){
