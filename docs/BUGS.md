@@ -537,6 +537,48 @@ assert 'FOCENI 📸' in d['matched_groups']
 
 ---
 
+## BUG-012 — `fetch_messages` spadne na `data[0]=None` z iCloud IMAP SEARCH
+
+**Severita:** medium (iCloud account negeneruje real-time IDLE notifikace, jen 30min scan funguje)
+**Zjištěno:** 2026-05-04 (drift fix session)
+**Status:** FIXED 2026-05-04 commit `<TBD>`
+
+### Popis
+[services/ingest/ingest_email.py:192](services/ingest/ingest_email.py:192) — po `m.uid('SEARCH', None, f'SINCE {since_str}')` kód volal `data[0].split()` bez ošetření. iCloud IMAP občas vrací `data=[None]` (prázdný výsledek nebo dočasný server glitch) → `AttributeError: 'NoneType' object has no attribute 'split'`.
+
+V logu PROD: každých 30s `[ERROR] [dxpavel@icloud.com] Chyba: 'NoneType' object has no attribute 'split' — reconnect za 30s`. IDLE listener pro iCloud v cyklickém crash/reconnect.
+
+### Důsledek
+- iCloud nedostává **real-time** notifikace přes IMAP IDLE (každý nový email čeká na 30min `job_email_scan` fallback místo na okamžitý IDLE push).
+- Logy zaspaměny chybou — ostatní bugy se v šumu hůř hledají.
+- Stejný anti-pattern (`data[0].split()` bez guard) je v 4 backfill skriptech, ale ty mají `if typ == "OK" and data[0]` guard PŘED voláním → tam OK.
+
+### Fix
+```python
+# před:
+uids = data[0].split()
+# po:
+uids = (data[0] or b"").split() if data else []
+```
+
+Plus pojistka pro `to_raw` (může být None po `decode_header_value`):
+```python
+to_raw = decode_header_value(msg.get("To", "")) or ""
+```
+
+### Jak ověřit po opravě
+```bash
+ssh pavel@10.55.2.231 "docker logs brogiasist-scheduler --since 5m 2>&1 | grep 'NoneType.*split'"
+# musí vrátit prázdný výsledek
+ssh pavel@10.55.2.231 "docker logs brogiasist-scheduler --since 5m 2>&1 | grep 'IMAP login OK: dxpavel@icloud.com'"
+# musí ukázat health login bez následného crashe
+```
+
+### Lessons
+Sekce **44** v `brogiasist-lessons-learned-v1.md`.
+
+---
+
 ## Šablona pro nový bug
 
 ```markdown

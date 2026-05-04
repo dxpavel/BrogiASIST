@@ -189,7 +189,9 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
     m = connect(account)
     m.select("INBOX", readonly=True)
     _, data = m.uid('SEARCH', None, f'SINCE {since_str}')  # UID-based search → skutečná UID
-    uids = data[0].split()
+    # 2026-05-04: iCloud občas vrátí data=[None] při dočasných glitchích nebo
+    # prázdném výsledku. `None.split()` → AttributeError. Ošetříme.
+    uids = (data[0] or b"").split() if data else []
     messages = []
     fetch_cmd = "(BODY[])" if account.get("fetch_cmd") == "BODY[]" else "(RFC822)"
     for uid in uids:
@@ -203,7 +205,7 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
             message_id = msg.get("Message-ID", f"uid-{uid.decode()}-{account['name']}").strip()
             subject = decode_header_value(msg.get("Subject", ""))
             from_addr = decode_header_value(msg.get("From", ""))
-            to_raw = decode_header_value(msg.get("To", ""))
+            to_raw = decode_header_value(msg.get("To", "")) or ""
             to_addrs = [a.strip() for a in to_raw.split(",") if a.strip()]
 
             sent_at = None

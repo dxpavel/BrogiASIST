@@ -311,8 +311,10 @@ ssh dxpavel@10.55.2.117 "launchctl list | grep brogi && curl -sm 5 http://localh
 | BUG-004/005 | medium | iCloud IMAP IDLE flaky (`Unexpected IDLE response`, `socket EOF`) | OPEN — auto-recovery 30s funguje |
 | BUG-006 | low | 12 emailů s `folder='BrogiASIST/*'` v DB pravděpodobně neexistuje na IMAPu | OPEN — datový dluh |
 | BUG-008 | HIGH | Apple Bridge fork() crash | **FIXED 2026-04-26** (posix_spawn) |
-| BUG-009 | HIGH | Group matching v decision_rules nematchne (data ve 2 disjoint datasets) | **OPEN** — fix v zítřejší session |
+| BUG-009 | HIGH | Group matching v decision_rules nematchne (data ve 2 disjoint datasets) | **FIXED 2026-04-27** (commit 6b43643) |
 | BUG-010 | MEDIUM | Mail.app AppleScript neumí custom headers (X-Brogi-Auto) | OPEN — vyžaduje arch decision |
+| BUG-011 | MEDIUM | JSONB `@>` case-sensitive v decision_engine | **FIXED 2026-04-27** (commit af5df96) |
+| BUG-012 | MEDIUM | iCloud IMAP `data[0]=None` → `NoneType.split` crash | **FIXED 2026-05-04** |
 
 ---
 
@@ -373,6 +375,12 @@ Scope: typicky modul (`scheduler`, `apple-bridge`, `dashboard`, `ingest`, `D5`, 
 - `getUpdates: 409 Conflict` = dvě instance pollují stejný `TELEGRAM_BOT_TOKEN`
 - Callbacky se náhodně rozdělí mezi instance → nepředvídatelné UI (např. starý layout tlačítek z DEV)
 - Před spuštěním DEV scheduleru ověř `docker ps | grep brogi-scheduler` že PROD je dolu (nebo opačně), případně použij separátní bot token
+
+### IMAP SEARCH guard `(data[0] or b"")`
+- iCloud IMAP občas vrací `data=[None]` při dočasných glitchích → `None.split()` → AttributeError
+- Vždy `uids = (data[0] or b"").split() if data else []` (ne přímý `data[0].split()`)
+- Backfill skripty mají guard `if typ == "OK" and data[0]` (OK), ostatní volání ošetřit
+- Lessons sekce **44**, BUG-012
 
 ### IMAP transient errors (neblokující)
 - `[Errno -3] Try again` (DNS z kontejneru)
@@ -457,6 +465,7 @@ header check → skupina BLOCKED ignoruj → VIP / personal flagy → Chroma vzo
 | 2026-04-27 | 1.1 | Přidána ACTION `2del` (var. C — ve všech TYPech). Update sekce 9 (rozhodnutí), sekce 14 (sumár) — 8 → 9 ACTIONs. |
 | 2026-05-04 | 1.2 | Sekce 12 — přidány dva nové gotchas: Python long-running + `docker cp`, TG bot 409 Conflict (paralelní instance). Pointery na lessons #40, #41. |
 | 2026-05-04 | 1.3 | Sekce 14 — `task_status` sub-stav doplněn, `ČEKÁ-NA-MĚ` odstraněno (redundantní s TYP=ÚKOL). Lessons #42 (placeholder strings sanitize) + #43 (univerzální 3×3 layout always-show). |
+| 2026-05-04 | 1.4 | Sekce 12 — IMAP `data[0] or b""` guard (BUG-012 fix). Sekce 10 — BUG-009/011 marked FIXED, BUG-012 added. Lessons sekce **44**. |
 
 > **Edituj tento soubor kdykoli se změní realita** (PROD migrace, nové branch konvence,
 > nové bugy, přejmenování, nové infrastructure...). Commit + push, příští session
