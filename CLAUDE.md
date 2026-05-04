@@ -363,6 +363,17 @@ Scope: typicky modul (`scheduler`, `apple-bridge`, `dashboard`, `ingest`, `D5`, 
 - Pravidlo `header_bounce` v decision_rules → matchuje `Content-Type contains "multipart/report"`, NE `Auto-Submitted` (oprava 2026-04-27, MantisBT HOSPODARY ticket falešně dostal TYP=ERROR)
 - Detail: incident `e55ecb66-...` v `email_messages`, fix v sql/013 + DB update
 
+### Python long-running proces — `docker cp` ≠ reload
+- Změny `.py` souborů v běžícím kontejneru bez restartu = **no-op** (kód je v paměti od importu při startu)
+- Vždy `docker compose up -d --build <service>`, ne jen `docker cp` + `restart`
+- Diag: `docker inspect ... --format '{{.State.StartedAt}}'` vs `git log --since="<StartedAt>"` na klíčové moduly
+- Lessons sekce **40** + **41** (incident 2026-05-04: drift TG tlačítek)
+
+### TG bot 409 Conflict = paralelní instance
+- `getUpdates: 409 Conflict` = dvě instance pollují stejný `TELEGRAM_BOT_TOKEN`
+- Callbacky se náhodně rozdělí mezi instance → nepředvídatelné UI (např. starý layout tlačítek z DEV)
+- Před spuštěním DEV scheduleru ověř `docker ps | grep brogi-scheduler` že PROD je dolu (nebo opačně), případně použij separátní bot token
+
 ### IMAP transient errors (neblokující)
 - `[Errno -3] Try again` (DNS z kontejneru)
 - `EOF in violation of protocol`
@@ -438,6 +449,7 @@ header check → skupina BLOCKED ignoruj → VIP / personal flagy → Chroma vzo
 |---|---|---|
 | 2026-04-26 | 1.0 | Vytvořeno — autoritativní pravda po release v2 work day |
 | 2026-04-27 | 1.1 | Přidána ACTION `2del` (var. C — ve všech TYPech). Update sekce 9 (rozhodnutí), sekce 14 (sumár) — 8 → 9 ACTIONs. |
+| 2026-05-04 | 1.2 | Sekce 12 — přidány dva nové gotchas: Python long-running + `docker cp`, TG bot 409 Conflict (paralelní instance). Pointery na lessons #40, #41. |
 
 > **Edituj tento soubor kdykoli se změní realita** (PROD migrace, nové branch konvence,
 > nové bugy, přejmenování, nové infrastructure...). Commit + push, příští session

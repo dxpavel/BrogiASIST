@@ -1,8 +1,8 @@
 ---
 Název: DOC-MAP
 Soubor: docs/DOC-MAP.md
-Verze: 4.7 (release v2 patch 2026-04-27)
-Poslední aktualizace: 2026-04-27
+Verze: 4.8 (drift fix patch 2026-05-04)
+Poslední aktualizace: 2026-05-04
 Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, neexistuje.
 ---
 
@@ -18,7 +18,7 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 | `SESSION-HANDOFF-D-CONTINUATION.md` | **PRIORITNÍ** handoff pro pokračování blockeru D — HIGH/MEDIUM/LOW priority + první krok | ✅ 2026-04-26 |
 | `brogiasist-architecture-v1.md` | Stack, services, endpointy, DB schéma, dataflow, IMAP akce — **vč. v2 komponent (decision_engine, pending_worker) + 2026-04-27 (univerzální 3×3 layout, 2del, predikce-jako-návrh, auto-spam vypnut)** | ✅ 2026-04-27 |
 | `brogiasist-data-dictionary-v1.md` | Datový model, DB tabulky, procesní tok, AI vrstvy — **vč. decision_rules + pending_actions + 9. ACTION 2del + endpoint POST /emails/suggested** | ✅ 2026-04-27 |
-| `brogiasist-lessons-learned-v1.md` | Poučení z praxe — IMAP, JXA, Docker, action logging, **+ sekce 38** (silent auto-spam race condition), **+ sekce 39** (header_bounce multipart/report) | ✅ 2026-04-27 |
+| `brogiasist-lessons-learned-v1.md` | Poučení z praxe — IMAP, JXA, Docker, action logging, **+ sekce 38/39** (auto-spam, header_bounce), **+ sekce 40** (Python long-running + `docker cp` ≠ reload), **+ sekce 41** (md5 není dostatečný diag signál) | ✅ 2026-05-04 |
 | `brogiasist-infrastructure-v1.md` | Stroje, porty, sítě, Docker, Apple Bridge — **DEV vs PROD** | ✅ 2026-04-26 |
 | `brogiasist-semantics-v1.md` | **Email TYP/STATUS/ACTION semantika** — kanonická spec + sekce 21 (implementation status na branch `2`) | ✅ 2026-04-26 v1.2 |
 | `BUGS.md` | Známé bugy a tech debt — **BUG-001/004/005/006/009/010 OPEN**, BUG-002/003 FIXED v 1.1, **BUG-007/008 FIXED 2026-04-26** | ✅ 2026-04-26 |
@@ -44,7 +44,7 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 | `SESSION-HANDOFF-BRANCH1.md` | Handoff pro branch `1` — implementace base64 příloh (DEV) — **DONE 1.1** |
 | `SESSION-HANDOFF-PROD.md` | Handoff pro PROD migraci session — startup prompt + co zvážit + co nedělat — **DONE 2026-04-26 (PROD na VM 103)** |
 | `PROD-MIGRATION-HANDOFF.md` | Detailní postup migrace — 7 fází (BrogiServer + PajaAppleStudio), autoritativní reference — **DONE** |
-| `SESSION-HANDOFF-D-CONTINUATION.md` | **AKTIVNÍ** handoff — pokračování blockeru D na branch `2` (BUG-009/010, threading TG flow, action wiring, calendar reply) |
+| `SESSION-HANDOFF-D-CONTINUATION.md` | **AKTIVNÍ** handoff — pokračování blockeru D na branch `2` (BUG-009/010, threading TG flow, action wiring, calendar reply) + **UPDATE 2026-05-04** (drift fix: PROD scheduler rebuild + DEV stop) |
 
 ---
 
@@ -60,7 +60,7 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 
 | Cesta | Popis |
 |---|---|
-| `CLAUDE.md` (root) | **Autoritativní projektová pravda** — 16 sekcí (PROD infra VM 103, ENV, deploy, gotchas, TYP/STATUS/ACTION sumár, BUG indexy, commit style). Načítá Claude Code automaticky při startu session. Vyhrává nad memory. (2026-04-26, 2026-04-27 patch) |
+| `CLAUDE.md` (root) | **Autoritativní projektová pravda** — 16 sekcí (PROD infra VM 103, ENV, deploy, gotchas, TYP/STATUS/ACTION sumár, BUG indexy, commit style). Načítá Claude Code automaticky při startu session. Vyhrává nad memory. (2026-04-26, 2026-04-27 patch, **2026-05-04 v1.2** — sekce 12 gotchas: docker cp/Python + TG 409) |
 | `services/dashboard/` | FastAPI dashboard + Jinja2 templates (v2: kostičky `.typ-box` + grafická semantika sekce 19) + predikce z Chromy v `/úkoly` (2026-04-27) |
 | `services/ingest/` | Scheduler, IMAP, Telegram, klasifikace + **decision_engine.py (v2)** + **pending_worker.py (v2)** + **chroma_audit.py / chroma_dedup.py (2026-04-27)** |
 | `services/apple-bridge/` | FastAPI bridge pro Apple API (host, port 9100) — **BUG-008 fix `os.posix_spawn()`** + nové endpointy `/of/task/{id}/...`, `/notes/{id}/...`, JXA `/contacts/all` |

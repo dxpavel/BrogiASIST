@@ -1056,6 +1056,67 @@ ORDER BY ASC → vrací **původní** task (nejstarší v threadu), ne poslední
 
 ---
 
+## 40. Python long-running proces v Dockeru — `docker cp` ≠ reload (2026-05-04)
+
+### Incident
+Pavel hlásí že některé TG zprávy po klasifikaci ukazují **starou** sadu tlačítek (per-TYP layout: OF/REM/NOTE • Hotovo/Přečteno/Čeká • Spam/Skip), zatímco jiné mají **novou** univerzální 3×3 sadu vč. suggestion buttonu (commit `61bd3e0` + `2837dae` + H2/H3 buttons z `e37f576`/`394ec5e`).
+
+### Diagnóza
+- `md5sum` souboru `notify_emails.py` v kontejneru `brogiasist-scheduler` se **shodoval** s lokálem (= soubor je aktuální).
+- `docker inspect` ukázal `StartedAt = 2026-04-27 19:30` — kontejner běží 6 dní.
+- Mezi tím proběhly 4 commity měnící `notify_emails.py` (`2837dae`, `e37f576`, `394ec5e`, …).
+
+Někdo (nebo Synology sync přes bind / manuální `docker cp`) **přepsal soubor na disku**, ale Python proces si při startu naimportoval moduly **do paměti**. Změny `.py` na disku po startu nemají efekt dokud se proces nerestartuje.
+
+### Sekundární příčina (paralelní bot)
+V logu PROD scheduleru: `Telegram getUpdates: 409 Conflict`. Na Pavlově MacBooku běžel `brogi-scheduler` (DEV) ~2 hodiny a konzumoval TG callbacky paralelně se starým kódem. To vysvětluje proč některé zprávy měly starý layout (DEV vyhrál race s PROD na konkrétní `getUpdates`).
+
+### Fix
+1. Na PROD VM 103: `cd ~/brogiasist && docker compose up -d --build scheduler` (full rebuild, ne jen restart — eliminuje drift všech `.py` souborů, ne jen jednoho).
+2. Na DEV MacBooku: `docker stop brogi-scheduler` (DEV DB/Chroma/dashboard běží dál).
+3. Verifikace: posledních 5 `getUpdates` → `200 OK` (žádný 409).
+
+### Poučení
+- **`docker cp` na long-running Python proces je nedostatečný.** Vždy restart kontejneru po podstatné změně modulu importovaného při startu (callback handlery, scheduler joby, klasifikační logika).
+- **Preferuj `docker compose up -d --build <service>`** před `docker cp + docker restart`. Eliminuje:
+  - drift mezi soubory (jeden soubor zkopírován, druhý zapomenut),
+  - mismatch image vs runtime,
+  - debug nightmare „proč Python má jiný kód než disk".
+- **TG bot 409 Conflict je signál paralelní instance.** Před spuštěním DEV scheduleru vždy ověř že PROD je dolu (nebo opačně). Telegram nedoručuje callback oběma — stochastic split.
+- **TODO:** Lekce #69 (existující v `Co ještě nebylo řešeno`) navrhovala bind mount pro `services/ingest:/app`. Pokud by byl, problém by zůstal stejný (process restart pořád potřeba), ale aspoň by se eliminoval ruční `docker cp`.
+
+---
+
+## 41. Diagnostika „kontejner běží starý kód" — md5 soubor není dostatečný signál (2026-05-04)
+
+### Pattern
+Při hypotéze „kontejner má starý kód" první instinkt je `md5sum souboru`. **Falešně negativní signál**: shoda md5 ≠ shoda běžícího kódu.
+
+### Správný diag flow
+
+```bash
+# 1. Hash souboru v kontejneru vs lokálu (rychlý first-pass)
+docker exec <container> md5sum /app/<modul>.py
+md5sum services/ingest/<modul>.py
+
+# 2. Container start time vs commit history (ROZHODUJÍCÍ pro Python long-running)
+docker inspect <container> --format '{{.State.StartedAt}}'
+git log --since="<StartedAt>" --oneline -- services/ingest/<modul>.py
+
+# Pokud v intervalu PROBĚHL commit a kontejner se NErestartoval → kód v paměti je starý.
+
+# 3. Image age vs build context
+docker inspect <container> --format '{{.Config.Image}}'
+docker images <image> --format '{{.CreatedAt}}'
+```
+
+### Poučení
+- Pro Python (a jakýkoli interpretovaný jazyk s import-time side effects) je **rozhodující signál `StartedAt` vs `git log --since`**, ne md5.
+- Kompilované jazyky (Go, Rust): jiný flow — image rebuild = nový binár, restart povinný.
+- **Pravidlo palce:** „kontejner běží > 24h + commit do souboru < 24h = podezření na drift v paměti." Restart, neuvažuj.
+
+---
+
 ## Co ještě nebylo řešeno / TODO
 
 - **iMessage ingest** — bridge endpoint naplánován, ingest skript a DB tabulka chybí

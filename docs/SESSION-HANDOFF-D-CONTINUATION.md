@@ -3,15 +3,43 @@ Název: SESSION-HANDOFF-D-CONTINUATION
 Soubor: docs/SESSION-HANDOFF-D-CONTINUATION.md
 Verze: 2.0
 Vytvořeno: 2026-04-26 22:30
-Aktualizováno: 2026-04-27 21:35
+Aktualizováno: 2026-05-04 (drift fix)
 Popis: Handoff pro pokračování blockeru D z branch `2`.
        Status po session 2026-04-27: H1 ✅, H3 ✅, H2 ✅, BUG-009 ✅, BUG-011 ✅.
+       Update 2026-05-04: PROD scheduler rebuild + DEV stop (drift kontejneru / TG 409 Conflict).
        Zbývá: M1–M4 (calendar/reply, 2undo, STATUS column, WebUI rules editor)
        + D3 zbylé 2 endpointy (mail/send, calendar/reply — vyžaduje rozhodnutí
        o headers, viz BUG-010) + L1–L5 vychytávky.
 ---
 
 # BrogiASIST — Session Handoff (D continuation, v2.0)
+
+## ⚠️ UPDATE 2026-05-04 — drift fix (krátká session)
+
+**Příznak (Pavel):** některé TG zprávy po klasifikaci mají starou per-TYP sadu tlačítek místo nové univerzální 3×3 sady (vč. suggestion buttonu z `2837dae` + H2/H3 buttons).
+
+**Root cause:**
+1. PROD `brogiasist-scheduler` na VM 103 běžel od 2026-04-27 19:30 (6 dní). Mezitím 4 commity měnily `notify_emails.py` / callback / classify. Soubor v kontejneru byl aktualizovaný (md5 match s lokálem) — ale **Python process si naimportoval starý kód do paměti při startu**, `docker cp` bez restartu = no-op.
+2. Paralelně **DEV `brogi-scheduler` na MacBooku** Pavla běžel ~2 hodiny → TG `getUpdates: 409 Conflict` → callbacky se rozdělily mezi PROD (nový kód) a DEV (starý kód) náhodně.
+
+**Fix:**
+- VM 103: `cd ~/brogiasist && docker compose up -d --build scheduler` (full rebuild).
+- MacBook: `docker stop brogi-scheduler` (DEV stack zbytek běží).
+- Verifikace: posledních 5 `getUpdates` → `200 OK`, žádný 409. Pavel potvrdil že nové TG zprávy mají správný layout.
+
+**Stav PROD po fixu:**
+- `brogiasist-scheduler` started 2026-05-04 08:43:38 (image rebuild)
+- Všechny 4 klíčové moduly md5 OK (`notify_emails`, `telegram_callback`, `classify_emails`, `decision_engine`)
+- TG bot konzumuje pouze PROD instance.
+
+**Důsledky:**
+- Staré TG zprávy odeslané před 08:43 zůstanou se starým layoutem (Telegram inline keyboard se retroaktivně nemění — neřešíme).
+- Lekce zapsány do `brogiasist-lessons-learned-v1.md` jako **#40** (Python long-running + `docker cp`) a **#41** (md5 není dostatečný diag signál).
+- CLAUDE.md sekce 12 doplněna o jednořádkový gotcha pointer.
+
+**Zatímco DEV scheduler je dolů:** nespouštět ho dokud PROD běží (znovu 409). Pokud je třeba DEV testing → buď stopnout PROD, nebo dočasný separátní bot token.
+
+---
 
 ## ⚠️ UPDATE 2026-04-27 — Co se stalo v této session
 
