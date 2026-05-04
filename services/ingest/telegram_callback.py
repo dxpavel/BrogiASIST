@@ -120,8 +120,14 @@ def _bridge_call_full(path: str, payload: dict, label: str, email_id: str) -> tu
     """
     import httpx as _httpx, os as _os
     bridge = _os.getenv("APPLE_BRIDGE_URL", "http://host.docker.internal:9100")
+    # M2 undo: speciální payload {"_method": "DELETE"} → použít HTTP DELETE
+    # (jinak default POST). Bridge má `@app.delete(...)` endpointy pro M2 undo.
+    method = (payload.pop("_method", "POST") if isinstance(payload, dict) else "POST").upper()
     try:
-        r = _httpx.post(f"{bridge}{path}", json=payload, timeout=15)
+        if method == "DELETE":
+            r = _httpx.delete(f"{bridge}{path}", timeout=15)
+        else:
+            r = _httpx.post(f"{bridge}{path}", json=payload, timeout=15)
         if r.status_code == 200:
             log.info(f"{label} created: email_id={email_id} status=200")
             try:
@@ -263,6 +269,59 @@ def _parse_invitation_subject(subject: str):
         return evt_name, date_t(year, month, day).isoformat(), None, True
 
 
+# ===== M2: 2undo (TTL 1h) — vratitelnost poslední akce =====
+
+UNDO_TTL_SECONDS = 3600  # 1h
+
+# Akce které lze inverzovat. note/unsub/skip nelze (technický důvod).
+# of/rem/cal: vyžadují DELETE endpointy v Apple Bridge (přidány 2026-05-04 v M2 final).
+UNDO_REVERSIBLE = {"hotovo", "precteno", "ceka", "spam", "del", "of", "rem", "cal"}
+
+
+def _capture_pre_action_state(email_id: str) -> dict:
+    """Načte aktuální stav emailu PŘED akcí — payload pro budoucí reverzi."""
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT folder, status, task_status, is_spam, of_task_id, rem_event_id, cal_event_id, from_address
+            FROM email_messages WHERE id=%s
+        """, (email_id,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            return {}
+        return {
+            "prev_folder": row[0],
+            "prev_status": row[1],
+            "prev_task_status": row[2],
+            "prev_is_spam": row[3],
+            "prev_of_task_id": row[4],
+            "prev_rem_event_id": row[5],
+            "prev_cal_event_id": row[6],
+            "from_address": row[7],
+        }
+    except Exception as e:
+        log.error(f"_capture_pre_action_state {email_id}: {e}")
+        return {}
+
+
+def _record_action(email_id: str, action: str, payload: dict):
+    """Zapíše last_action + last_action_at + last_action_payload pro budoucí undo."""
+    if action not in UNDO_REVERSIBLE:
+        return
+    try:
+        import json as _json
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            UPDATE email_messages
+            SET last_action=%s, last_action_at=NOW(), last_action_payload=%s::jsonb
+            WHERE id=%s
+        """, (action, _json.dumps(payload, default=str), email_id))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        log.error(f"_record_action {email_id} {action}: {e}")
+
+
 def _folder_for_email(email_id: str) -> str:
     conn = get_conn()
     cur = conn.cursor()
@@ -281,6 +340,11 @@ def _email_action(email_id: str, action: str):
     """
     do_mark_read = True  # vždy označit přečtené, kromě skip
     imap_op = None       # ("brogi", subfolder) | ("trash",) | None
+
+    # M2: undo support — capture state PŘED úpravou
+    if action == "undo":
+        return _email_undo(email_id)
+    pre_state = _capture_pre_action_state(email_id) if action in UNDO_REVERSIBLE else {}
 
     if action == "hotovo":
         conn = get_conn(); cur = conn.cursor()
@@ -370,14 +434,23 @@ def _email_action(email_id: str, action: str):
         if not row:
             return
         subject, from_addr = row
-        ok = _bridge_call("/reminders/add", {
+        ok, resp = _bridge_call_full("/reminders/add", {
             "name": subject or "(bez předmětu)",
             "body": f"Od: {from_addr}\nBrogiASIST email id: {email_id}",
         }, "REM", str(email_id))
         if not ok:
             return
+        # M2: zachytit reminder id pro budoucí undo
+        rem_id = (resp or {}).get("id")
         conn = get_conn(); cur = conn.cursor()
-        cur.execute("UPDATE email_messages SET task_status='→REM', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
+        if rem_id:
+            cur.execute(
+                "UPDATE email_messages SET task_status='→REM', rem_event_id=%s, human_reviewed=TRUE, status='reviewed' WHERE id=%s",
+                (rem_id, email_id),
+            )
+        else:
+            cur.execute("UPDATE email_messages SET task_status='→REM', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
+            log.warning(f"REM created bez id (Bridge return), undo nebude fungovat: email_id={email_id}")
         conn.commit(); cur.close(); conn.close()
         imap_op = ("brogi", "HOTOVO")
     elif action == "note":
@@ -408,7 +481,7 @@ def _email_action(email_id: str, action: str):
         subject, from_addr, body = row
         cal_name = _calendar_for_email(from_addr)
         evt_name, start_iso, end_iso, all_day = _parse_invitation_subject(subject or "")
-        ok = _bridge_call("/calendar/add", {
+        ok, resp = _bridge_call_full("/calendar/add", {
             "name": evt_name,
             "notes": f"Od: {from_addr}\n\n{body or ''}"[:1000],
             "calendar": cal_name,
@@ -418,8 +491,17 @@ def _email_action(email_id: str, action: str):
         }, "CAL", str(email_id))
         if not ok:
             return
+        # M2: zachytit event UID pro budoucí undo
+        cal_uid = (resp or {}).get("id")
         conn = get_conn(); cur = conn.cursor()
-        cur.execute("UPDATE email_messages SET task_status='→CAL', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
+        if cal_uid:
+            cur.execute(
+                "UPDATE email_messages SET task_status='→CAL', cal_event_id=%s, human_reviewed=TRUE, status='reviewed' WHERE id=%s",
+                (cal_uid, email_id),
+            )
+        else:
+            cur.execute("UPDATE email_messages SET task_status='→CAL', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
+            log.warning(f"CAL created bez UID (Bridge return), undo nebude fungovat: email_id={email_id}")
         conn.commit(); cur.close(); conn.close()
         imap_op = ("brogi", "HOTOVO")
     elif action == "unsub":
@@ -519,6 +601,22 @@ def _email_action(email_id: str, action: str):
     if do_mark_read:
         action_done(email_id)
 
+    # M2: zaznamenat akci pro undo (TTL 1h check v _email_undo)
+    if action in UNDO_REVERSIBLE and pre_state:
+        # doplním post-action ID-ka (of_task_id atd. už je v DB)
+        try:
+            conn_p = get_conn(); cur_p = conn_p.cursor()
+            cur_p.execute("SELECT of_task_id, rem_event_id, cal_event_id FROM email_messages WHERE id=%s", (email_id,))
+            row_p = cur_p.fetchone()
+            cur_p.close(); conn_p.close()
+            if row_p:
+                pre_state["new_of_task_id"] = row_p[0]
+                pre_state["new_rem_event_id"] = row_p[1]
+                pre_state["new_cal_event_id"] = row_p[2]
+        except Exception:
+            pass
+        _record_action(email_id, action, pre_state)
+
     if action != "skip":
         try:
             conn2 = get_conn()
@@ -561,6 +659,179 @@ def _email_action(email_id: str, action: str):
         log.error(f"delete TG msg: {_e}")
 
 
+def _email_undo(email_id: str):
+    """M2: Vrátit poslední akci. TTL 1h. Reverze podle last_action + payload."""
+    from datetime import datetime, timezone
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT last_action, last_action_at, last_action_payload
+            FROM email_messages WHERE id=%s
+        """, (email_id,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+    except Exception as e:
+        log.error(f"undo: load last_action failed {email_id}: {e}")
+        send(f"⚠️ Undo selhalo (DB error): {e}")
+        return
+
+    if not row or not row[0]:
+        send("⚠️ Žádná akce k vrácení.")
+        return
+
+    last_action, last_action_at, payload = row
+    payload = payload or {}
+
+    # TTL check
+    if last_action_at:
+        age_s = (datetime.now(timezone.utc) - last_action_at).total_seconds()
+        if age_s > UNDO_TTL_SECONDS:
+            send(f"⚠️ Undo už není možné — akce starší než {UNDO_TTL_SECONDS // 60} min.")
+            return
+
+    log.info(f"undo: email_id={email_id} last_action={last_action} age={int(age_s)}s")
+
+    # Dispatch reverze
+    if last_action in ("hotovo", "precteno", "ceka"):
+        # Vrátit task_status + IMAP zpět z BrogiASIST/* do INBOX
+        prev_ts = payload.get("prev_task_status")
+        prev_status = payload.get("prev_status") or "classified"
+        try:
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute(
+                "UPDATE email_messages SET task_status=%s, status=%s, human_reviewed=FALSE WHERE id=%s",
+                (prev_ts, prev_status, email_id),
+            )
+            conn.commit(); cur.close(); conn.close()
+        except Exception as e:
+            log.error(f"undo {last_action}: DB reset failed: {e}")
+        # IMAP move zpět do INBOX
+        try:
+            move_to_brogi_folder(email_id, "INBOX")
+        except Exception as e:
+            log.error(f"undo {last_action}: IMAP move INBOX failed: {e}")
+
+    elif last_action == "spam":
+        # is_spam=FALSE + smazat sender z classification_rules + IMAP move z Trash do INBOX
+        sender = payload.get("from_address")
+        try:
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute(
+                "UPDATE email_messages SET is_spam=%s, human_reviewed=FALSE, status=%s WHERE id=%s",
+                (payload.get("prev_is_spam", False), payload.get("prev_status") or "classified", email_id),
+            )
+            if sender:
+                cur.execute("DELETE FROM classification_rules WHERE rule_type='spam' AND match_value=%s",
+                            (sender.lower(),))
+            conn.commit(); cur.close(); conn.close()
+        except Exception as e:
+            log.error(f"undo spam: DB cleanup failed: {e}")
+        try:
+            move_to_brogi_folder(email_id, "INBOX")
+        except Exception as e:
+            log.error(f"undo spam: IMAP move INBOX failed: {e}")
+
+    elif last_action == "del":
+        # IMAP move z Trash do INBOX, status reset
+        try:
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute(
+                "UPDATE email_messages SET human_reviewed=FALSE, status=%s WHERE id=%s",
+                (payload.get("prev_status") or "classified", email_id),
+            )
+            conn.commit(); cur.close(); conn.close()
+        except Exception as e:
+            log.error(f"undo del: DB reset failed: {e}")
+        try:
+            move_to_brogi_folder(email_id, "INBOX")
+        except Exception as e:
+            log.error(f"undo del: IMAP move INBOX failed: {e}")
+
+    elif last_action == "of":
+        of_id = payload.get("new_of_task_id") or payload.get("prev_of_task_id")
+        if of_id:
+            ok, _resp = _bridge_call_full(f"/omnifocus/task/{of_id}", {"_method": "DELETE"}, "OF-undo", email_id)
+            if not ok:
+                send(f"⚠️ OF task se nepodařilo smazat (id={of_id}). DB reset proběhne.")
+        else:
+            send("⚠️ OF task ID v payloadu chybí, smazat nelze. DB reset proběhne.")
+        try:
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute(
+                "UPDATE email_messages SET task_status=%s, of_task_id=NULL, of_linked_at=NULL, "
+                "human_reviewed=FALSE, status=%s WHERE id=%s",
+                (payload.get("prev_task_status"), payload.get("prev_status") or "classified", email_id),
+            )
+            conn.commit(); cur.close(); conn.close()
+        except Exception as e:
+            log.error(f"undo of: DB reset failed: {e}")
+        try:
+            move_to_brogi_folder(email_id, "INBOX")
+        except Exception as e:
+            log.error(f"undo of: IMAP move INBOX failed: {e}")
+
+    elif last_action == "rem":
+        rem_id = payload.get("new_rem_event_id") or payload.get("prev_rem_event_id")
+        if rem_id:
+            ok, _resp = _bridge_call_full(f"/reminders/{rem_id}", {"_method": "DELETE"}, "REM-undo", email_id)
+            if not ok:
+                send(f"⚠️ Reminder se nepodařilo smazat (id={rem_id}). DB reset proběhne.")
+        else:
+            send("⚠️ Reminder ID v payloadu chybí. DB reset proběhne.")
+        try:
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute(
+                "UPDATE email_messages SET task_status=%s, rem_event_id=NULL, "
+                "human_reviewed=FALSE, status=%s WHERE id=%s",
+                (payload.get("prev_task_status"), payload.get("prev_status") or "classified", email_id),
+            )
+            conn.commit(); cur.close(); conn.close()
+        except Exception as e:
+            log.error(f"undo rem: DB reset failed: {e}")
+        try:
+            move_to_brogi_folder(email_id, "INBOX")
+        except Exception as e:
+            log.error(f"undo rem: IMAP move INBOX failed: {e}")
+
+    elif last_action == "cal":
+        cal_id = payload.get("new_cal_event_id") or payload.get("prev_cal_event_id")
+        if cal_id:
+            ok, _resp = _bridge_call_full(f"/calendar/{cal_id}", {"_method": "DELETE"}, "CAL-undo", email_id)
+            if not ok:
+                send(f"⚠️ Calendar event se nepodařilo smazat (uid={cal_id}). DB reset proběhne.")
+        else:
+            send("⚠️ Calendar UID v payloadu chybí. DB reset proběhne.")
+        try:
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute(
+                "UPDATE email_messages SET task_status=%s, cal_event_id=NULL, "
+                "human_reviewed=FALSE, status=%s WHERE id=%s",
+                (payload.get("prev_task_status"), payload.get("prev_status") or "classified", email_id),
+            )
+            conn.commit(); cur.close(); conn.close()
+        except Exception as e:
+            log.error(f"undo cal: DB reset failed: {e}")
+        try:
+            move_to_brogi_folder(email_id, "INBOX")
+        except Exception as e:
+            log.error(f"undo cal: IMAP move INBOX failed: {e}")
+
+    else:
+        send(f"⚠️ Akce '{last_action}' nelze vrátit.")
+        return
+
+    # Vyčistit last_action — undo není reverzibilní (žádný re-undo)
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("UPDATE email_messages SET last_action=NULL, last_action_at=NULL, last_action_payload='{}'::jsonb WHERE id=%s", (email_id,))
+        conn.commit(); cur.close(); conn.close()
+    except Exception:
+        pass
+
+    send(f"↶ Vráceno: <code>{last_action}</code>")
+    log.info(f"undo OK: email_id={email_id} action={last_action}")
+
+
 ACTION_LABEL = {
     "hotovo":    "✅ Označeno jako hotovo",
     "precteno":  "👁️ Označeno jako přečteno",
@@ -576,6 +847,7 @@ ACTION_LABEL = {
     "of_open":   "📂 OF link odeslán",
     "of_append": "📎 Příloženo k OF tasku",
     "of_new":    "➕ Nový OF task (mimo thread)",
+    "undo":      "↶ Vráceno",
 }
 
 
@@ -604,6 +876,15 @@ def process_callback(update: dict):
         label = ACTION_LABEL.get(action, "OK")
         answer_callback(cb_id, label)
         log.info(f"Callback email:{action} id={email_id}")
+        # M2: po reverzibilní akci přidat ↶ Vrátit (1h) button
+        if action in UNDO_REVERSIBLE:
+            try:
+                send(
+                    f"{label}\n<i>Akci lze vrátit do 1h.</i>",
+                    buttons=[[{"text": "↶ Vrátit (1h)", "callback_data": f"email:undo:{email_id}"}]],
+                )
+            except Exception as _e:
+                log.warning(f"undo button send failed: {_e}")
 
     else:
         answer_callback(cb_id, "OK")
