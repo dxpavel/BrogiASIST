@@ -133,6 +133,54 @@ def _eval_sender(condition: dict, email: dict) -> bool:
     return bool(actual) and actual == expected
 
 
+# M5 session 2 (předtaženo): subject/body keyword condition_types
+_TEXT_BODY_MAX = 2000  # max znaků body pro perf
+
+
+def _eval_text(condition: dict, text: str) -> bool:
+    """Generic text matcher pro subject/body. Operátory: contains, starts_with,
+    ends_with, equals, regex. Default case-insensitive (lze přepnout
+    case_sensitive=true v condition)."""
+    if not text:
+        return False
+    op = condition.get("operator", "contains")
+    value = str(condition.get("value", ""))
+    if not value:
+        return False
+    case_sensitive = bool(condition.get("case_sensitive", False))
+    if not case_sensitive:
+        text_cmp = text.lower()
+        value_cmp = value.lower()
+    else:
+        text_cmp = text
+        value_cmp = value
+    if op == "contains":
+        return value_cmp in text_cmp
+    if op == "starts_with":
+        return text_cmp.startswith(value_cmp)
+    if op == "ends_with":
+        return text_cmp.endswith(value_cmp)
+    if op == "equals":
+        return text_cmp == value_cmp
+    if op == "regex":
+        try:
+            flags = 0 if case_sensitive else re.IGNORECASE
+            return bool(re.search(value, text, flags))
+        except re.error as e:
+            logger.warning(f"_eval_text invalid regex {value!r}: {e}")
+            return False
+    return False
+
+
+def _eval_subject(condition: dict, email: dict) -> bool:
+    return _eval_text(condition, email.get("subject", "") or "")
+
+
+def _eval_body(condition: dict, email: dict) -> bool:
+    body = (email.get("body_text", "") or "")[:_TEXT_BODY_MAX]
+    return _eval_text(condition, body)
+
+
 def _eval_chroma(condition: dict, email: dict) -> Optional[dict]:
     """Vrací zapamatovanou action z Chromy pokud je podobná, jinak None.
 
@@ -218,6 +266,10 @@ def evaluate_email(email: dict, conn=None) -> dict:
                     extra["matched_groups"] = groups
             elif ct == "sender":
                 matched = _eval_sender(cv, email)
+            elif ct == "subject":
+                matched = _eval_subject(cv, email)
+            elif ct == "body":
+                matched = _eval_body(cv, email)
             elif ct == "chroma":
                 cr = _eval_chroma(cv, email)
                 if cr is not None:

@@ -19,9 +19,250 @@
 .rule-spam   { color:var(--red); }
 .rule-task   { color:var(--yellow); }
 .hit-bar { display:inline-block; height:6px; background:var(--primary-d); border-radius:2px; vertical-align:middle; }
+
+/* M4 — Decision Engine */
+.dr-table td, .dr-table th { font-size:10px; vertical-align:middle; }
+.dr-prio { width:50px; text-align:center; font-weight:700; color:var(--primary-d); }
+.dr-name { font-family:'JetBrains Mono',monospace; font-weight:700; }
+.dr-cond, .dr-act {
+  font-family:'JetBrains Mono',monospace; font-size:9px; color:var(--muted);
+  max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.dr-ctype { font-size:9px; padding:1px 5px; border-radius:3px; background:var(--bg); border:1px solid var(--border2); color:var(--text); }
+.dr-ctype-header { color:#79c0ff; }
+.dr-ctype-subject { color:#f0c674; }
+.dr-ctype-body { color:#d19a66; }
+.dr-ctype-group { color:#ff7a6e; }
+.dr-ctype-chroma { color:#a78bfa; }
+.dr-ctype-sender { color:#56d364; }
+.dr-ctype-ai_fallback { color:#FFA726; }
+.dr-atype { font-size:9px; padding:1px 5px; border-radius:3px; }
+.dr-atype-end { background:rgba(229,57,53,.20); color:#ff7a6e; }
+.dr-atype-flag { background:rgba(255,167,38,.20); color:#FFA726; }
+.dr-atype-apply_remembered { background:rgba(67,160,71,.20); color:#56d364; }
+.dr-atype-run_llama { background:rgba(26,35,126,.30); color:#79c0ff; }
+.dr-toggle { cursor:pointer; user-select:none; }
+.dr-toggle-on  { color:#43A047; font-weight:700; }
+.dr-toggle-off { color:#757575; text-decoration:line-through; }
+.dr-actions { white-space:nowrap; }
+.dr-btn {
+  background:var(--bg); border:1px solid var(--border2); color:var(--text);
+  padding:2px 8px; border-radius:3px; font-size:10px; cursor:pointer;
+  font-family:'JetBrains Mono',monospace;
+}
+.dr-btn:hover { border-color:var(--primary-d); }
+.dr-btn-del:hover { border-color:#E53935; color:#ff7a6e; }
+.dr-modal-bg {
+  display:none; position:fixed; inset:0;
+  background:rgba(0,0,0,.55); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+  z-index:100; align-items:center; justify-content:center;
+}
+.dr-modal-bg.show { display:flex; }
+.dr-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 40px rgba(0,0,0,.45), 0 2px 8px rgba(0,0,0,.25);
+  padding: 0;
+  min-width: 540px; max-width: 720px; max-height: 90vh;
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.dr-modal-head {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg, var(--surface));
+  display: flex; align-items: center; justify-content: space-between;
+}
+.dr-modal-head h3 {
+  margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-muted); font-family: var(--font-mono);
+}
+.dr-modal-close {
+  background: transparent; border: none; color: var(--text-muted);
+  font-size: 18px; line-height: 1; cursor: pointer; padding: 0 4px;
+}
+.dr-modal-close:hover { color: var(--text); }
+.dr-modal-body { padding: 14px 18px; overflow-y: auto; }
+.dr-modal label { display:block; margin:8px 0 3px 0; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+.dr-modal input[type="text"], .dr-modal input[type="number"], .dr-modal select, .dr-modal textarea {
+  width:100%; box-sizing:border-box; background:var(--bg); border:1px solid var(--border2);
+  color:var(--text); padding:5px 8px; border-radius:3px; font-size:10px;
+  font-family:'JetBrains Mono',monospace; outline:none;
+}
+.dr-modal textarea { min-height:64px; resize:vertical; }
+.dr-modal-row { display:flex; gap:8px; }
+.dr-modal-row > div { flex:1; }
+.dr-modal-foot {
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--bg, var(--surface));
+  display: flex; gap: 8px; justify-content: flex-end;
+}
+
+/* P1: filter chips */
+.dr-chip {
+  display: inline-block; padding: 3px 10px; border-radius: 12px;
+  background: var(--bg); border: 1px solid var(--border2);
+  color: var(--text-muted); font-size: 10px; cursor: pointer;
+  font-family: var(--font-mono); user-select: none;
+  transition: .12s;
+}
+.dr-chip:hover { border-color: var(--primary-d); color: var(--text); }
+.dr-chip-active {
+  background: var(--primary-d); color: #000; border-color: var(--primary-d);
+  font-weight: 700;
+}
+
+/* P2: drag handle + drag states */
+.dr-drag {
+  cursor: grab; color: var(--text-muted); font-size: 13px; padding: 0 4px;
+  user-select: none;
+}
+.dr-drag:hover { color: var(--text); }
+tr.dr-dragging { opacity: 0.4; }
+tr.dr-drag-over { border-top: 2px solid var(--primary-d); }
+
+/* P3: inline priority edit */
+.dr-prio-edit {
+  width: 40px; text-align: center; background: var(--bg);
+  border: 1px solid var(--primary-d); border-radius: 3px;
+  color: var(--text); font-family: var(--font-mono); font-size: 11px;
+  font-weight: 700; padding: 1px 2px; outline: none;
+}
+.dr-prio.editable:hover { background: var(--bg); cursor: text; }
 {% endblock %}
 
 {% block content %}
+<!-- ===== M4: Decision Engine ===== -->
+<div class="card">
+  <h2 style="display:flex;align-items:center;gap:10px">
+    Decision Engine
+    <span class="fcount">{{ decision_rules|length }} pravidel</span>
+    <button class="dr-btn" onclick="drOpenAdd()" style="margin-left:auto">+ Nové pravidlo</button>
+  </h2>
+  <p style="color:var(--muted);font-size:10px;margin:0 0 8px 0">
+    Engine pravidla se aplikují v pořadí <b>priority ASC</b> před AI klasifikací (Llama).
+    Tip: <i>táhni řádek za <code>≡</code> pro změnu pořadí · klik na priority pro inline edit.</i>
+  </p>
+
+  {# P1: filter chips podle condition_type #}
+  <div class="filter-bar" style="margin-bottom:8px">
+    <span class="dr-chip dr-chip-active" data-ct="" onclick="drFilterCt(this)">Vše</span>
+    <span class="dr-chip" data-ct="header" onclick="drFilterCt(this)">header</span>
+    <span class="dr-chip" data-ct="subject" onclick="drFilterCt(this)">subject</span>
+    <span class="dr-chip" data-ct="body" onclick="drFilterCt(this)">body</span>
+    <span class="dr-chip" data-ct="group" onclick="drFilterCt(this)">group</span>
+    <span class="dr-chip" data-ct="chroma" onclick="drFilterCt(this)">chroma</span>
+    <span class="dr-chip" data-ct="sender" onclick="drFilterCt(this)">sender</span>
+    <span class="dr-chip" data-ct="ai_fallback" onclick="drFilterCt(this)">ai_fallback</span>
+    <input id="drSearch" type="text" placeholder="Hledat v rule_name…" oninput="drApplyFilter()" style="margin-left:auto">
+    <span class="fcount" id="drVisible"></span>
+  </div>
+
+  {% if decision_rules %}
+  <table class="dr-table">
+    <thead>
+      <tr>
+        <th style="width:18px"></th>
+        <th class="dr-prio">#</th>
+        <th style="width:140px">Název</th>
+        <th style="width:90px">Cond</th>
+        <th>Condition value</th>
+        <th style="width:90px">Action</th>
+        <th>Action value</th>
+        <th style="width:60px;text-align:center">On/Off</th>
+        <th style="width:140px">Akce</th>
+      </tr>
+    </thead>
+    <tbody id="drBody">
+    {% for r in decision_rules %}
+    <tr data-id="{{ r.id }}" data-ct="{{ r.condition_type }}" data-rname="{{ r.rule_name }}" data-rule='{{ r|tojson }}' draggable="true">
+      <td class="dr-drag" title="Táhni pro změnu pořadí">≡</td>
+      <td class="dr-prio editable" onclick="drEditPrio(this, {{ r.id }})">{{ r.priority }}</td>
+      <td class="dr-name">{{ r.rule_name }}</td>
+      <td><span class="dr-ctype dr-ctype-{{ r.condition_type }}">{{ r.condition_type }}</span></td>
+      <td class="dr-cond" title="{{ r.condition_value }}">{{ r.condition_value }}</td>
+      <td><span class="dr-atype dr-atype-{{ r.action_type }}">{{ r.action_type }}</span></td>
+      <td class="dr-act" title="{{ r.action_value }}">{{ r.action_value }}</td>
+      <td style="text-align:center">
+        <span class="dr-toggle dr-toggle-{{ 'on' if r.enabled else 'off' }}"
+              onclick="drToggle({{ r.id }}, this)">{{ 'ON' if r.enabled else 'OFF' }}</span>
+      </td>
+      <td class="dr-actions">
+        <button class="dr-btn" onclick="drOpenEdit({{ r.id }})">Edit</button>
+        <button class="dr-btn dr-btn-del" onclick="drDelete({{ r.id }}, '{{ r.rule_name }}')">Smazat</button>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">Žádná decision pravidla. Klikni „+ Nové pravidlo" nebo aplikuj migraci 013.</p>
+  {% endif %}
+</div>
+
+<!-- Edit/Add modal -->
+<div class="dr-modal-bg" id="drModalBg" onclick="if(event.target===this)drCloseModal()">
+  <div class="dr-modal" role="dialog" aria-modal="true">
+    <div class="dr-modal-head">
+      <h3 id="drModalTitle">Edit pravidlo</h3>
+      <button class="dr-modal-close" onclick="drCloseModal()" aria-label="Zavřít">×</button>
+    </div>
+    <div class="dr-modal-body">
+      <input type="hidden" id="drId">
+      <div class="dr-modal-row">
+        <div>
+          <label>Priority (ASC, nižší = dřív)</label>
+          <input type="number" id="drPriority" min="1" max="999">
+        </div>
+        <div style="flex:2">
+          <label>Rule name (unikátní)</label>
+          <input type="text" id="drRuleName" placeholder="např. header_list">
+        </div>
+      </div>
+      <div class="dr-modal-row">
+        <div>
+          <label>Condition type</label>
+          <select id="drCondType">
+            <option value="header">header</option>
+            <option value="subject">subject</option>
+            <option value="body">body</option>
+            <option value="group">group</option>
+            <option value="chroma">chroma</option>
+            <option value="sender">sender</option>
+            <option value="ai_fallback">ai_fallback</option>
+          </select>
+        </div>
+        <div>
+          <label>Action type</label>
+          <select id="drActType">
+            <option value="end">end</option>
+            <option value="flag">flag</option>
+            <option value="apply_remembered">apply_remembered</option>
+            <option value="run_llama">run_llama</option>
+          </select>
+        </div>
+      </div>
+      <label>Condition value (JSON)</label>
+      <textarea id="drCondValue" placeholder='{"header":"X-Brogi-Auto","operator":"exists"}'></textarea>
+      <label>Action value (JSON)</label>
+      <textarea id="drActValue" placeholder='{"reason":"bot_reply","skip":true}'></textarea>
+      <label>Description</label>
+      <input type="text" id="drDesc" placeholder="krátký popis">
+      <div style="margin-top:8px">
+        <label style="display:inline">
+          <input type="checkbox" id="drEnabled" checked> enabled
+        </label>
+      </div>
+    </div>
+    <div class="dr-modal-foot">
+      <button class="dr-btn" onclick="drCloseModal()">Zrušit</button>
+      <button class="dr-btn" id="drSaveBtn" onclick="drSave()" style="border-color:var(--primary-d);color:var(--primary-d)">Uložit</button>
+    </div>
+  </div>
+</div>
+
 <div class="card">
   <h2>Klasifikační pravidla</h2>
 
@@ -96,6 +337,244 @@
   const sel = document.getElementById('fResult');
   results.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
 })();
+
+// ===== M4: Decision Engine CRUD =====
+let _drEditId = null;
+
+function drOpenAdd(){
+  _drEditId = null;
+  document.getElementById('drModalTitle').textContent = 'Nové pravidlo';
+  document.getElementById('drId').value = '';
+  document.getElementById('drPriority').value = 100;
+  document.getElementById('drRuleName').value = '';
+  document.getElementById('drCondType').value = 'header';
+  document.getElementById('drActType').value = 'end';
+  document.getElementById('drCondValue').value = '{}';
+  document.getElementById('drActValue').value = '{}';
+  document.getElementById('drDesc').value = '';
+  document.getElementById('drEnabled').checked = true;
+  document.getElementById('drModalBg').classList.add('show');
+}
+
+function drOpenEdit(id){
+  const row = document.querySelector(`#drBody tr[data-id="${id}"]`);
+  if(!row) return;
+  const r = JSON.parse(row.dataset.rule);
+  _drEditId = id;
+  document.getElementById('drModalTitle').textContent = 'Edit pravidlo: ' + r.rule_name;
+  document.getElementById('drId').value = r.id;
+  document.getElementById('drPriority').value = r.priority;
+  document.getElementById('drRuleName').value = r.rule_name;
+  document.getElementById('drCondType').value = r.condition_type;
+  document.getElementById('drActType').value = r.action_type;
+  document.getElementById('drCondValue').value = r.condition_value;
+  document.getElementById('drActValue').value = r.action_value;
+  document.getElementById('drDesc').value = r.description || '';
+  document.getElementById('drEnabled').checked = !!r.enabled;
+  document.getElementById('drModalBg').classList.add('show');
+}
+
+function drCloseModal(){
+  document.getElementById('drModalBg').classList.remove('show');
+}
+
+async function drSave(){
+  let condVal, actVal;
+  try { condVal = JSON.parse(document.getElementById('drCondValue').value || '{}'); }
+  catch(e){ alert('Condition value není validní JSON: ' + e.message); return; }
+  try { actVal = JSON.parse(document.getElementById('drActValue').value || '{}'); }
+  catch(e){ alert('Action value není validní JSON: ' + e.message); return; }
+
+  const payload = {
+    priority: parseInt(document.getElementById('drPriority').value, 10),
+    rule_name: document.getElementById('drRuleName').value.trim(),
+    condition_type: document.getElementById('drCondType').value,
+    condition_value: condVal,
+    action_type: document.getElementById('drActType').value,
+    action_value: actVal,
+    enabled: document.getElementById('drEnabled').checked,
+    description: document.getElementById('drDesc').value.trim() || null,
+  };
+  if(!payload.rule_name){ alert('Rule name je povinný'); return; }
+
+  const url = _drEditId ? `/api/decision-rules/${_drEditId}` : '/api/decision-rules';
+  const method = _drEditId ? 'PUT' : 'POST';
+  const r = await fetch(url, {
+    method, headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(payload),
+  });
+  if(!r.ok){
+    const t = await r.text();
+    alert(`Chyba ${r.status}: ${t}`);
+    return;
+  }
+  drCloseModal();
+  location.reload();
+}
+
+async function drToggle(id, el){
+  const r = await fetch(`/api/decision-rules/${id}/toggle`, {method:'PATCH'});
+  if(!r.ok){ alert('Toggle selhalo'); return; }
+  const d = await r.json();
+  el.classList.remove('dr-toggle-on','dr-toggle-off');
+  el.classList.add(d.enabled ? 'dr-toggle-on' : 'dr-toggle-off');
+  el.textContent = d.enabled ? 'ON' : 'OFF';
+}
+
+async function drDelete(id, name){
+  if(!confirm(`Smazat pravidlo "${name}"?`)) return;
+  const r = await fetch(`/api/decision-rules/${id}`, {method:'DELETE'});
+  if(!r.ok){ alert('Delete selhalo'); return; }
+  location.reload();
+}
+
+// P1: Filter chips + search ====================================
+let _drFilterCt = '';
+function drFilterCt(el){
+  document.querySelectorAll('.dr-chip').forEach(c => c.classList.remove('dr-chip-active'));
+  el.classList.add('dr-chip-active');
+  _drFilterCt = el.dataset.ct || '';
+  drApplyFilter();
+}
+function drApplyFilter(){
+  const search = (document.getElementById('drSearch').value || '').toLowerCase().trim();
+  const rows = document.querySelectorAll('#drBody tr');
+  let visible = 0;
+  rows.forEach(tr => {
+    const ct = tr.dataset.ct || '';
+    const name = (tr.dataset.rname || '').toLowerCase();
+    const ctOk = !_drFilterCt || ct === _drFilterCt;
+    const sOk = !search || name.includes(search);
+    const show = ctOk && sOk;
+    tr.style.display = show ? '' : 'none';
+    if(show) visible++;
+  });
+  document.getElementById('drVisible').textContent = visible + ' viditelných';
+}
+
+// P3: Inline priority edit ====================================
+function drEditPrio(td, id){
+  if(td.querySelector('input')) return;  // už editujeme
+  const orig = td.textContent.trim();
+  const inp = document.createElement('input');
+  inp.type = 'number'; inp.min = 1; inp.max = 999;
+  inp.value = orig; inp.className = 'dr-prio-edit';
+  td.textContent = '';
+  td.appendChild(inp);
+  inp.focus(); inp.select();
+
+  const save = async () => {
+    const newVal = parseInt(inp.value, 10);
+    if(isNaN(newVal) || newVal < 1 || newVal > 999){
+      td.textContent = orig;
+      return;
+    }
+    if(String(newVal) === orig){
+      td.textContent = orig;
+      return;
+    }
+    // PUT — potřebuje plný payload, použijeme data-rule z TR
+    const tr = td.closest('tr');
+    const rule = JSON.parse(tr.dataset.rule);
+    let condVal, actVal;
+    try {
+      condVal = JSON.parse(rule.condition_value);
+      actVal  = JSON.parse(rule.action_value);
+    } catch(e) {
+      td.textContent = orig; alert('JSON parse chyba: ' + e.message); return;
+    }
+    const payload = {
+      priority: newVal,
+      rule_name: rule.rule_name,
+      condition_type: rule.condition_type,
+      condition_value: condVal,
+      action_type: rule.action_type,
+      action_value: actVal,
+      enabled: rule.enabled,
+      description: rule.description || null,
+    };
+    const r = await fetch(`/api/decision-rules/${id}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if(!r.ok){
+      const t = await r.text();
+      alert(`Update selhal ${r.status}: ${t}`);
+      td.textContent = orig;
+      return;
+    }
+    td.textContent = newVal;
+    // Uložit do data-rule aby další edit nepoužíval starou prioritu
+    rule.priority = newVal;
+    tr.dataset.rule = JSON.stringify(rule);
+  };
+
+  inp.addEventListener('blur', save);
+  inp.addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ inp.blur(); }
+    if(e.key === 'Escape'){ td.textContent = orig; }
+  });
+}
+
+// P2: Drag&drop priority reorder ====================================
+let _drDragSrc = null;
+document.addEventListener('DOMContentLoaded', () => {
+  const body = document.getElementById('drBody');
+  if(!body) return;
+  body.addEventListener('dragstart', e => {
+    const tr = e.target.closest('tr');
+    if(!tr) return;
+    _drDragSrc = tr;
+    tr.classList.add('dr-dragging');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  body.addEventListener('dragend', e => {
+    const tr = e.target.closest('tr');
+    if(tr) tr.classList.remove('dr-dragging');
+    document.querySelectorAll('tr.dr-drag-over').forEach(r => r.classList.remove('dr-drag-over'));
+  });
+  body.addEventListener('dragover', e => {
+    e.preventDefault();
+    const tr = e.target.closest('tr');
+    if(!tr || tr === _drDragSrc) return;
+    document.querySelectorAll('tr.dr-drag-over').forEach(r => r.classList.remove('dr-drag-over'));
+    tr.classList.add('dr-drag-over');
+  });
+  body.addEventListener('drop', async e => {
+    e.preventDefault();
+    const target = e.target.closest('tr');
+    if(!target || !_drDragSrc || target === _drDragSrc) return;
+    body.insertBefore(_drDragSrc, target);
+    target.classList.remove('dr-drag-over');
+    await drSaveOrder();
+  });
+});
+
+async function drSaveOrder(){
+  const ids = Array.from(document.querySelectorAll('#drBody tr')).map(tr => parseInt(tr.dataset.id, 10));
+  const r = await fetch('/api/decision-rules/reorder', {
+    method:'PATCH', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ids: ids}),
+  });
+  if(!r.ok){
+    alert('Reorder selhal — reload pro vrácení původního pořadí');
+    return;
+  }
+  // Update zobrazené priority — přepočítaly se 10/20/30...
+  const data = await r.json();
+  if(data.priorities){
+    document.querySelectorAll('#drBody tr').forEach(tr => {
+      const id = parseInt(tr.dataset.id, 10);
+      const newPrio = data.priorities[id];
+      if(newPrio){
+        tr.querySelector('.dr-prio').textContent = newPrio;
+        const rule = JSON.parse(tr.dataset.rule);
+        rule.priority = newPrio;
+        tr.dataset.rule = JSON.stringify(rule);
+      }
+    });
+  }
+}
 
 function applyFilters(){
   const fType   = document.getElementById('fType').value;

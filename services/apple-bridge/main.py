@@ -260,7 +260,9 @@ JSON.stringify(result);
 
 @app.post("/reminders/add")
 def reminders_add(body: dict):
-    """Přidá reminder do Apple Reminders (výchozí seznam)."""
+    """Přidá reminder do Apple Reminders (výchozí seznam).
+    Vrací: {ok, name, id} — id potřebujeme pro budoucí undo (DELETE /reminders/{id}).
+    """
     name         = body.get("name", "") or ""
     reminder_body = body.get("body", "") or ""
     list_name    = body.get("list", "Reminders")
@@ -274,11 +276,42 @@ const lists = rm.lists.whose({{name: {list_js}}})();
 const lst = lists.length > 0 ? lists[0] : rm.lists[0];
 const r = rm.Reminder({{name: {name_js}, body: {body_js}}});
 lst.reminders.push(r);
-JSON.stringify({{ok: true, name: {name_js}}});
+const rid = r.id();
+JSON.stringify({{ok: true, name: {name_js}, id: rid}});
 """
     try:
         result = run_jxa(script)
-        return {"ok": True, "name": name}
+        rid = result.get("id") if isinstance(result, dict) else None
+        return {"ok": True, "name": name, "id": rid}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/reminders/{reminder_id}")
+def reminders_delete(reminder_id: str):
+    """M2 undo: smaže reminder podle id (vrácený z /reminders/add)."""
+    rid_js = json.dumps(reminder_id)
+    script = f"""
+const rm = Application('Reminders');
+try {{
+  const rems = rm.reminders.whose({{id: {rid_js}}})();
+  if (rems.length === 0) {{
+    JSON.stringify({{ok: false, error: 'reminder_not_found'}});
+  }} else {{
+    rm.delete(rems[0]);
+    JSON.stringify({{ok: true, deleted: {rid_js}}});
+  }}
+}} catch(e) {{
+  JSON.stringify({{ok: false, error: e.toString()}});
+}}
+"""
+    try:
+        result = run_jxa(script)
+        if isinstance(result, dict) and not result.get("ok"):
+            raise HTTPException(status_code=404, detail=result.get("error", "reminder delete failed"))
+        return result if isinstance(result, dict) else {"ok": True}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1097,7 +1130,66 @@ def calendar_add(body: dict):
             raise HTTPException(status_code=500, detail="Žádný kalendář nenalezen")
 
         target.save_event(ical_bytes)
-        return {"ok": True, "calendar": cal_name, "name": name}
+        # M2 undo: vrátit UID — undo pak smaže event přes DELETE /calendar/{uid}
+        event_uid = str(ev.get("uid"))
+        return {"ok": True, "calendar": cal_name, "name": name, "id": event_uid}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/calendar/{event_uid}")
+def calendar_delete(event_uid: str):
+    """M2 undo: smaže event z iCloud Calendar přes CalDAV podle UID
+    (vrácený z /calendar/add). Hledá ve všech kalendářích — UID je globálně unikátní."""
+    try:
+        client = caldav.DAVClient(url=CALDAV_URL, username=CALDAV_USER, password=CALDAV_PASS)
+        principal = client.principal()
+        for c in principal.calendars():
+            try:
+                ev = c.event_by_uid(event_uid)
+                ev.delete()
+                return {"ok": True, "deleted": event_uid, "calendar": c.get_display_name()}
+            except Exception:
+                continue
+        raise HTTPException(status_code=404, detail=f"Event UID '{event_uid}' nenalezen v žádném kalendáři")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/omnifocus/task/{task_id}")
+def omnifocus_task_delete(task_id: str):
+    """M2 undo: smaže OmniFocus task podle id (vrácený z /omnifocus/add_task).
+    Pokud delete selže (TCC, JXA limitation), fallback na markComplete."""
+    tid_js = json.dumps(task_id)
+    script = f"""
+const of = Application('OmniFocus');
+const doc = of.defaultDocument;
+try {{
+  const tasks = doc.flattenedTasks.whose({{id: {tid_js}}})();
+  if (tasks.length === 0) {{
+    JSON.stringify({{ok: false, error: 'task_not_found'}});
+  }} else {{
+    try {{
+      of.delete(tasks[0]);
+      JSON.stringify({{ok: true, deleted: {tid_js}, method: 'delete'}});
+    }} catch(de) {{
+      tasks[0].markComplete();
+      JSON.stringify({{ok: true, deleted: {tid_js}, method: 'markComplete', delete_error: de.toString()}});
+    }}
+  }}
+}} catch(e) {{
+  JSON.stringify({{ok: false, error: e.toString()}});
+}}
+"""
+    try:
+        result = run_jxa(script)
+        if isinstance(result, dict) and not result.get("ok"):
+            raise HTTPException(status_code=404, detail=result.get("error", "OF task delete failed"))
+        return result if isinstance(result, dict) else {"ok": True}
     except HTTPException:
         raise
     except Exception as e:
