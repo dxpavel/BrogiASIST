@@ -14,6 +14,32 @@ Popis: Handoff pro pokračování blockeru D z branch `2`.
 
 # BrogiASIST — Session Handoff (D continuation, v2.0)
 
+## ⚠️ UPDATE 2026-05-04 (pozdní večer) — v2.0 tag + M5-s2 + BUG-001 + L1/L2
+
+**HOTOVO** v této pokračovací mini-session:
+- **M5 session 2** Llama threshold tracking (`CLAUDE_VERIFY_THRESHOLD` env,
+  default 0.90, ai_source flag) + dashboard `/admin` "AI Source distribuce"
+  tile widget (calibration data pro session 3)
+- **BUG-001** — `email_actions.py` (834 ř.) sdílený modul, `telegram_callback.py`
+  redukován 909→110 ř. Veřejné API `email_action()` + `email_undo()`.
+- **L5** — merge `2`→`main` + tag **v2.0** + push (stable bod návratu)
+- **L1** — Email Semantics v1 status (NOVÝ/ZPRACOVANÝ/SMAZANÝ) + migrace 018
+- **L2** — smazat `/contacts/all_sqlite` legacy v Apple Bridge
+
+**PROD stav:**
+- branch `2`, last commit `c4ff63f`
+- Tag `v2.0` na main
+- Migrace 016, 017, 018 aplikované
+- Apple Bridge 1069 ř. (19 endpointů, sqlite removed)
+- 385 emailů přemapováno na nové Email Semantics statusy
+
+**Lessons #49–#51** (replace_all gotcha, refactor pattern, layered status mapping).
+
+**Příští session = M5 session 3 (Claude verify cascade ~6h)** — viz spec
+`docs/feature-specs/FEATURE-AI-CASCADE-v1.md` sekce 4 + 9.
+
+---
+
 ## ⚠️ UPDATE 2026-05-04 (večer) — M2/M3/M4 hotové + M5 spec
 
 **HOTOVO** (PROD deployed ~18:29 lokálně, branch `2`, merge commit `084992b`):

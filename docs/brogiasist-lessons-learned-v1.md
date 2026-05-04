@@ -1329,6 +1329,94 @@ Spec je levný (1h), záchrana před chaotickým kódem (3h zpětně) je velká.
 
 ---
 
+## 49. Replace_all v Edit toolu matchne **substring**, ne celé tokeny (2026-05-04, BUG-001 refactor)
+
+**Problém:** Při refactoru `_email_action` → `email_action` (drop underscore u
+veřejné funkce) jsem použil `Edit replace_all=true old_string="_email_action"`.
+Po importu v dockeru:
+```
+ImportError: cannot import name 'storeemail_action' from 'chroma_client'
+```
+
+**Příčina:** `replace_all` matchne KAŽDÝ výskyt substringu, NE jen celé
+identifikátory. `store_email_action` obsahuje `_email_action` jako substring
+→ rename → `storeemail_action` (rozbité). Nebyl to problém pro `_email_undo`
+(žádný `something_email_undo` v projektu), ale `store_email_action` z
+chroma_client.py mělo nešťastnou jmennou kolizi.
+
+**Fix:** Po replace_all vždy `grep` zlomené identifikátory + Edit zpět.
+Trvalo to 2 min protože smoke test (`python3 -c "import ..."`) chytil hned.
+
+**Pravidlo:** Při `replace_all` rename identifikátoru, který má **`_` v sobě**:
+1. Nejdřív `grep -rn "<old_substring>" ...` → ujistit se že žádný **delší
+   identifikátor** ho neobsahuje jako substring
+2. Pokud ano → `replace_all` je nebezpečný, použij explicit Edit s context
+   (např. `def _email_action(` → `def email_action(`)
+3. Po replace_all VŽDY `python3 -c "from <modul> import *"` smoke test
+4. Bonus: `grep -rn "old_token_substring"` na zbylé výskyty po rename
+
+Pravidla pro AI agenty a refactor: když je možné, používej IDE rename
+(symbol-aware), ne string substitution. V Claude Code: `replace_all=False`
++ explicitní context z context (def/class/import).
+
+---
+
+## 50. Refactor 909→110 řádek — sdílený modul "skrytý" v UI vrstvě (2026-05-04, BUG-001)
+
+**Problém:** `services/ingest/telegram_callback.py` měl 909 řádků, z toho
+~800 byla sdílená business logika (email akce, undo, IMAP move, Bridge call,
+DB UPDATE) — NE Telegram-specific. WebUI (`api.py:33`) ji volal přes
+`from telegram_callback import _email_action` → architektonicky špatně:
+- WebUI změny vyžadovaly editovat `telegram_callback.py` (matoucí)
+- Underscore (`_email_action`) signalizoval "private", ale modul z toho
+  exportoval funkci do druhého modulu — protichůdný signál
+- Při budoucí 3. UI cestě (iOS / voice) další import přes "TG modul"
+
+**Fix (BUG-001, commit 3507591):**
+- nový `services/ingest/email_actions.py` (834 ř.) — veřejné API
+  `email_action()` + `email_undo()` (drop underscore = veřejné)
+- `telegram_callback.py` redukován na 110 ř. — TG-specific:
+  `OFFSET_KEY`, `_load_offset/_save_offset`, `process_callback`,
+  `run_callback_loop`. Importuje business logiku z `email_actions`.
+
+**Pravidlo:** Pokud modul X **exportuje** funkci do druhého modulu Y, ta
+funkce nepatří v X. Patří v třetím (sdíleném) modulu, oba importují z něj.
+Sniff test: čteš `from X import _foo` v Y? Pak `_foo` patří přesunout.
+
+---
+
+## 51. Layered status mapping — vždy zachovej legacy fallback při migraci (2026-05-04, L1)
+
+**Problém:** L1 přepsal kód `_save_classification` ze `status='classified'` /
+`'reviewed'` na Email Semantics v1 (`'NOVÝ'` / `'ZPRACOVANÝ'` / `'SMAZANÝ'`).
+SQL migrace 018 backfillovala existující data. Nicméně dashboard Jinja
+template byl psaný s předpokladem **jen** legacy hodnot:
+```jinja
+{% set sc = {'new':'novy', 'classified':'novy', 'reviewed':'zpracovany', 'ignored':'smazany'} %}
+{% set _s = sc.get(m.status, 'novy') %}  ← cokoli neznámé fallback 'novy'
+```
+Po migraci by `m.status='ZPRACOVANÝ'` → fallback → 'novy' → wrong color!
+
+**Fix:** Mapping rozšířen o **OBĚ sady** (legacy + nové):
+```jinja
+{% set sc = {
+    'NOVÝ':'novy', 'PŘEČTENÝ':'precteny', 'ČEKAJÍCÍ':'cekajici',
+    'ZPRACOVANÝ':'zpracovany', 'SMAZANÝ':'smazany',
+    'new':'novy', 'classified':'novy', 'reviewed':'zpracovany', 'ignored':'smazany'
+} %}
+```
+
+**Pravidlo:** Při enum/status migraci v DB **nikdy** současně nepřepiš UI
+mapping na "jen nové hodnoty". Zachovej **dual-acceptance** alespoň 1-2
+sessions, dokud nejsi 100% jistý že:
+1. Žádná stará data nepřežila (audit `SELECT DISTINCT status FROM ...`)
+2. Žádný kód nepíše už staré hodnoty (grep)
+
+Bonus: SQL migrace **idempotentní** + `IF NOT IN (...)` fallback safeguard
+(viz sql/018 řádek 30).
+
+---
+
 ## Co ještě nebylo řešeno / TODO
 
 - **iMessage ingest** — bridge endpoint naplánován, ingest skript a DB tabulka chybí

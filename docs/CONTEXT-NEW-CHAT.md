@@ -1,8 +1,8 @@
 ---
 Název: CONTEXT-NEW-CHAT
 Soubor: docs/CONTEXT-NEW-CHAT.md
-Verze: 8.0 (M2/M3/M4/M5-pre deployed, M5 spec ready)
-Poslední aktualizace: 2026-05-04
+Verze: 8.1 (v2.0 tag, M5-s2 + BUG-001 + L1/L2 deployed)
+Poslední aktualizace: 2026-05-04 (pozdní večer)
 Popis: Kontext pro nový chat — stav, cesty, problémy
 ---
 
@@ -14,8 +14,9 @@ Popis: Kontext pro nový chat — stav, cesty, problémy
 > Pro M5 plán: `docs/feature-specs/FEATURE-AI-CASCADE-v1.md` (v1.1).
 > Stable bod návratu: tag `v1.1` (commit `ee483ba` na main).
 
-## Co je nově HOTOVO (2026-05-04 evening session)
+## Co je nově HOTOVO (2026-05-04 evening + late-evening session)
 
+**Evening:**
 - **M3** STATUS kolečka v dashboard email tabulce
 - **M4** Decision Engine editor v `/pravidla` — CRUD + filter chips + drag&drop priority + inline edit
 - **M2** 2undo TTL 1h pro 8 reverzibilních akcí + ↶ Vrátit (1h) button v TG
@@ -24,6 +25,14 @@ Popis: Kontext pro nový chat — stav, cesty, problémy
 - **BUG-014** mark_read skip Trash FIXED+DEPLOYED
 - **Apple Bridge** rozšířen: 3 DELETE endpointy + ID v add response
 - **Migrace 016** aplikovaná na PROD: 5 nových sloupců v email_messages
+
+**Late-evening:**
+- **M5 session 2** Llama threshold tracking (`CLAUDE_VERIFY_THRESHOLD` env) + `/admin` AI Source tile widget
+- **BUG-001** email_actions.py refactor (909→110 ř.)
+- **L5** tag **v2.0** + merge `2`→main
+- **L1** Email Semantics v1 status (NOVÝ/ZPRACOVANÝ/SMAZANÝ + migrace 018)
+- **L2** smazat sqlite contacts endpoint v Bridge
+- **Migrace 017** ai_source + **018** status_semantics na PROD
 
 ## Příští session = M5 session 2 (Llama refinement)
 

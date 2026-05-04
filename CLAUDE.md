@@ -307,7 +307,7 @@ ssh dxpavel@10.55.2.117 "launchctl list | grep brogi && curl -sm 5 http://localh
 
 | ID | Severita | Co | Status |
 |---|---|---|---|
-| BUG-001 | medium | `_email_action` patří do sdíleného modulu, ne v telegram_callback.py | OPEN |
+| BUG-001 | medium | `_email_action` patří do sdíleného modulu, ne v telegram_callback.py | **FIXED 2026-05-04** (commit 3507591) |
 | BUG-004/005 | medium | iCloud IMAP IDLE flaky (`Unexpected IDLE response`, `socket EOF`) | OPEN — auto-recovery 30s funguje |
 | BUG-006 | low | 12 emailů s `folder='BrogiASIST/*'` v DB pravděpodobně neexistuje na IMAPu | OPEN — datový dluh |
 | BUG-008 | HIGH | Apple Bridge fork() crash | **FIXED 2026-04-26** (posix_spawn) |
@@ -469,6 +469,7 @@ header check → skupina BLOCKED ignoruj → VIP / personal flagy → Chroma vzo
 | 2026-05-04 | 1.3 | Sekce 14 — `task_status` sub-stav doplněn, `ČEKÁ-NA-MĚ` odstraněno (redundantní s TYP=ÚKOL). Lessons #42 (placeholder strings sanitize) + #43 (univerzální 3×3 layout always-show). |
 | 2026-05-04 | 1.4 | Sekce 12 — IMAP `data[0] or b""` guard (BUG-012 fix). Sekce 10 — BUG-009/011 marked FIXED, BUG-012 added. Lessons sekce **44**. |
 | 2026-05-04 | 1.5 | Sekce 10 — BUG-013/014 marked FIXED+DEPLOYED. M2/M3/M4/M5-pre deployed na PROD (commit 084992b). Lessons sekce **45–48**. M5 spec viz `docs/feature-specs/FEATURE-AI-CASCADE-v1.md`. |
+| 2026-05-04 | 1.6 | Tag **v2.0** vytvořen (merge 2→main, commit 77bb59e). M5 session 2 (Llama threshold tracking + ai_source widget), BUG-001 refactor (email_actions.py 834 ř., telegram_callback.py 909→110 ř.), L1 Email Semantics v1 status (NOVÝ/ZPRACOVANÝ/SMAZANÝ migration sql/018), L2 sqlite contacts endpoint smazán. BUG-001 FIXED. Lessons **49–51**. Migrace **017** + **018**. |
 
 > **Edituj tento soubor kdykoli se změní realita** (PROD migrace, nové branch konvence,
 > nové bugy, přejmenování, nové infrastructure...). Commit + push, příští session
