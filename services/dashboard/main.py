@@ -622,6 +622,7 @@ async def ukoly(request: Request):
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request):
+    ai_source_stats = []
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
@@ -629,6 +630,17 @@ async def admin_page(request: Request):
         topics_raw = cur.fetchall()
         cur.execute("SELECT id, topic_id, signal_type, value FROM topic_signals ORDER BY signal_type, value")
         signals_raw = cur.fetchall()
+        # M5 session 2: ai_source distribuce — kalibrace pro Claude verify threshold
+        cur.execute("""
+            SELECT COALESCE(ai_source, 'unknown') AS src, COUNT(*),
+                   ROUND(AVG(ai_confidence)::numeric, 3) AS avg_conf
+            FROM email_messages
+            WHERE typ IS NOT NULL
+            GROUP BY ai_source
+            ORDER BY 2 DESC
+        """)
+        ai_source_stats = [{"source": r[0], "count": r[1], "avg_conf": float(r[2]) if r[2] is not None else None}
+                           for r in cur.fetchall()]
         conn.close()
         topics = [{"id": r[0], "name": r[1], "parent_id": r[2], "priority": r[3], "description": r[4]} for r in topics_raw]
         signals = {}
@@ -644,6 +656,7 @@ async def admin_page(request: Request):
         topics = []
     return templates.TemplateResponse("admin.html", {
         "request": request, "topics": parents, "all_topics": topics,
+        "ai_source_stats": ai_source_stats,
         "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
 

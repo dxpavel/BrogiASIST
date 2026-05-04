@@ -89,6 +89,36 @@
 {% endblock %}
 
 {% block content %}
+
+{# M5 session 2: ai_source distribuce #}
+{% if ai_source_stats %}
+<div class="card" style="margin-bottom:12px">
+  <h2>AI Source distribuce <span style="font-size:9px;color:var(--text-muted);font-weight:400">(M5 calibration — pre-Claude cascade)</span></h2>
+  <table style="width:auto;font-size:10px">
+    <thead>
+      <tr><th style="width:200px">Zdroj</th><th class="num" style="width:60px">Počet</th><th class="num" style="width:80px">Avg conf</th><th>Význam</th></tr>
+    </thead>
+    <tbody>
+    {% for s in ai_source_stats %}
+    <tr>
+      <td><code>{{ s.source }}</code></td>
+      <td class="num">{{ s.count }}</td>
+      <td class="num">{% if s.avg_conf is not none %}{{ '%.1f%%'|format(s.avg_conf * 100) }}{% else %}—{% endif %}</td>
+      <td style="color:var(--text-muted);font-size:9px">
+        {% if s.source == 'llama' %}Llama nad threshold (≥90 %)
+        {% elif s.source == 'llama_low_confidence' %}Llama pod threshold — čeká na Claude (session 3)
+        {% elif s.source == 'rule' %}Decision_rules end (header_list, encrypted, ...)
+        {% elif s.source == 'chroma' %}Chroma vector match
+        {% elif s.source == 'claude' %}Claude API verify (Haiku 4.5)
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <div class="admin-grid">
 
   <!-- LEFT: Add topic form -->
