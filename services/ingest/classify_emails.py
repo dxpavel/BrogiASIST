@@ -328,7 +328,15 @@ def classify_new_emails(limit: int = 20):
             if in_contacts and is_spam:
                 log.info(f"KONTAKT override: AI řekla spam, ignoruji ({from_addr})")
                 is_spam = False
-            confidence = float(result.get("confidence", 0.5))
+            # BUG-013: Llama občas vrátí raw placeholder "<0.0-1.0>" → ValueError
+            raw_confidence = result.get("confidence", 0.5)
+            try:
+                confidence = float(raw_confidence)
+                if not (0.0 <= confidence <= 1.0):
+                    raise ValueError(f"out of range: {confidence}")
+            except (TypeError, ValueError) as e:
+                log.warning(f"Llama vrátila invalid confidence={raw_confidence!r}, fallback 0.5 ({email_id}): {e}")
+                confidence = 0.5
             # 2026-05-04: Sanitize Llama output — invalid hodnoty (vč. raw
             # placeholder stringů typu "<ÚKOL|DOKLAD|...>") → fallback.
             raw_typ = result.get("typ", "INFO")
