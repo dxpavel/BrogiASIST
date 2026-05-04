@@ -1523,6 +1523,37 @@ Nepředpokládej "všichni stejně".
 
 ---
 
+## 55. VERSION soubor + bind mount = bump bez rebuildu (2026-05-04, BrogiMAT inspirace)
+
+**Problém:** Verze systému (`v1`) byla **hardcoded** v `base.html`. Bump na
+`v2.0` = edit template + rebuild + redeploy dashboard image. Pavel chtěl
+jednodušší cestu (jako BrogiMAT v3.0-dev).
+
+**Řešení (commit a948527):**
+1. `VERSION` text soubor v **repo rootu** — single source of truth (`2.0\n`)
+2. `services/dashboard/main.py:_load_version()` — čte z 3 fallback paths
+   (`../../VERSION`, `/app/VERSION`, `./VERSION`), set `templates.env.globals["app_version"]`
+3. `base.html`: `<span class="nav-badge">v{{ app_version }}</span>`
+4. `docker-compose.yml` přidán bind mount `./VERSION:/app/VERSION:ro`
+
+**Výsledek:** bump verze =
+```bash
+echo "2.1" > VERSION
+docker compose restart dashboard   # bind mount → reload, žádný rebuild
+git add VERSION && git commit -m "chore: bump v2.1"
+```
+
+**Pravidlo pro single-source-of-truth metadata** (verze, build id, env name):
+- Soubor v repo rootu (ne v image)
+- Bind mount read-only do containeru
+- Aplikace čte při startu (cache v `templates.env.globals` / module-level constant)
+- Restart = rychlý reload (žádný image rebuild)
+
+Anti-pattern: hardcoded verze v Dockerfile `ENV` / template — vyžaduje
+rebuild při bumpu, navíc CI/CD by ji muselo přepisovat.
+
+---
+
 ## Co ještě nebylo řešeno / TODO
 
 - **iMessage ingest** — bridge endpoint naplánován, ingest skript a DB tabulka chybí

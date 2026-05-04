@@ -530,3 +530,39 @@ docker exec brogi_scheduler python backfill_mark_read.py
 | `services/ingest/chroma_dedup.py` | Deduplikace D1 (stejný sender + normalizovaný subject) — preferuje human_corrected, nejnovější |
 | `services/ingest/api.py:POST /emails/suggested` | Batch endpoint pro Dashboard `/úkoly` predikce z Chromy |
 | `chroma_client.find_repeat_action_with_score` | Vrací (action, match_count, total_close) pro UI návrhy |
+
+---
+
+## Verze systému — VERSION soubor (2026-05-04)
+
+Single source of truth pro verzi systému: `VERSION` text soubor v **repo rootu**
+(jediný řádek, např. `2.0`).
+
+### Konzumace
+
+| Kde | Jak |
+|---|---|
+| Dashboard (`services/dashboard/main.py`) | `_load_version()` čte z 3 fallback paths (`../../VERSION` lokálně, `/app/VERSION` v containeru, `./VERSION` jako sib) → set `templates.env.globals["app_version"]` při startu |
+| `base.html` nav badge | `<span class="nav-badge">v{{ app_version }}</span>` (dynamic) — viditelné v levém horním rohu vedle loga |
+| Container | bind mount `./VERSION:/app/VERSION:ro` v `docker-compose.yml` (dashboard service) |
+
+### Bump verze (= bez rebuildu)
+
+```bash
+echo "2.1" > VERSION
+docker compose restart dashboard       # bind mount → reload, NE rebuild
+git add VERSION && git commit -m "chore: bump v2.1"
+```
+
+Ostatní moduly (scheduler, Apple Bridge) zatím verzi nezobrazují — případné
+budoucí zobrazení v `/admin` nebo TG hlavičce může číst stejný soubor stejně.
+
+### Inspirace
+
+Analogicky k BrogiMAT (`web/www/index.html` → `<span class="header-tag">v3.0-dev</span>`).
+Pavlův požadavek 2026-05-04: konzistentní zobrazení verze napříč brogi-* projekty.
+
+### Lekce #55
+
+Anti-pattern: hardcoded verze v Dockerfile `ENV` / template = každý bump
+vyžaduje rebuild + redeploy. Bind mount + restart = sekundy.

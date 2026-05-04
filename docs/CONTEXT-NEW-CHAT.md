@@ -1,8 +1,8 @@
 ---
 Název: CONTEXT-NEW-CHAT
 Soubor: docs/CONTEXT-NEW-CHAT.md
-Verze: 8.3 (M1 final + BUG-010 FIXED — Zero open BUGs)
-Poslední aktualizace: 2026-05-04 (pozdní noc)
+Verze: 8.4 (M1 final + BUG-010 FIXED + VERSION dashboard nav)
+Poslední aktualizace: 2026-05-04 (úplně poslední, ~19:50)
 Popis: Kontext pro nový chat — stav, cesty, problémy
 ---
 
@@ -50,6 +50,11 @@ Popis: Kontext pro nový chat — stav, cesty, problémy
   POZVÁNKA pre-row `[📅✉️ 2cal+Accept]`
 - **Migrace 020** `tg_pending_replies` (chat_id PK, TTL 30min)
 - **🎉 Zero open BUGs.**
+
+**Úplně poslední — VERSION feature:**
+- `VERSION` soubor v repo rootu (single source of truth, „2.0")
+- Dashboard nav badge dynamicky `v{{ app_version }}` (jako BrogiMAT)
+- Bind mount → bump bez rebuildu (commit a948527, lekce #55)
 
 ## Příští session = M5 session 2 (Llama refinement)
 

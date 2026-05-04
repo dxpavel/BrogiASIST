@@ -73,8 +73,9 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 | `services/dashboard/` | FastAPI dashboard + Jinja2 templates (v2: kostičky `.typ-box` + grafická semantika sekce 19) + predikce z Chromy v `/úkoly` (2026-04-27) |
 | `services/ingest/` | Scheduler, IMAP, Telegram, klasifikace + **decision_engine.py (v2)** + **pending_worker.py (v2)** + **chroma_audit.py / chroma_dedup.py (2026-04-27)** |
 | `services/apple-bridge/` | FastAPI bridge pro Apple API (host, port 9100) — **BUG-008 fix `os.posix_spawn()`** + nové endpointy `/of/task/{id}/...`, `/notes/{id}/...`, JXA `/contacts/all` |
-| `sql/` | SQL migrace 001–014: 012_apple_contacts_groups.sql, 013_decision_rules.sql, 014_email_semantics_v1.sql (vše v branch `2`) |
-| `.env` | Environment proměnné (`OLLAMA_URL`, `APPLE_BRIDGE_URL`, IMAP credentials, ...) |
+| `sql/` | SQL migrace 001–020: 015_decision_flags, 016_undo_history, 017_ai_source, 018_status_semantics, 019_imap_lost, 020_tg_pending_replies (2026-05-04) |
+| `VERSION` | **Single source of truth pro verzi systému** (`2.0`). Bind mount do dashboard containeru — bump = edit + restart, žádný rebuild. (2026-05-04, viz architecture sekce „Verze systému") |
+| `.env` | Environment proměnné (`OLLAMA_URL`, `APPLE_BRIDGE_URL`, IMAP credentials, `CLAUDE_VERIFY_THRESHOLD`, ...) |
 | `~/Library/LaunchAgents/cz.brogiasist.apple-bridge.plist` | Autostart Apple Bridge — Apple Studio (10.55.2.117) |
 | **PROD VM 103 deploy** | `ssh pavel@10.55.2.231` → `cd ~/brogiasist` → `git pull origin 2` → `docker compose build/up` |
 

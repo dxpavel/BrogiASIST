@@ -14,6 +14,26 @@ Popis: Handoff pro pokračování blockeru D z branch `2`.
 
 # BrogiASIST — Session Handoff (D continuation, v2.0)
 
+## ⚠️ UPDATE 2026-05-04 (úplně poslední, ~19:50) — VERSION feature
+
+**Pavlův požadavek** (po M1 deploy): „přidej verzi do dashboardu, jako má
+BrogiMAT". Implementováno (commit a948527):
+
+- `VERSION` text soubor v **repo rootu** (single source of truth, `2.0`)
+- `services/dashboard/main.py:_load_version()` — čte při startu, set
+  `templates.env.globals["app_version"]`
+- `base.html` nav badge: hardcoded `v1` → dynamic `v{{ app_version }}`
+  + tooltip "Verze systému (z VERSION souboru)"
+- `docker-compose.yml`: bind mount `./VERSION:/app/VERSION:ro` v dashboard
+  service → bump verze = `echo X > VERSION && docker compose restart dashboard`,
+  **žádný image rebuild**
+- Architektura doc rozšířena o sekci "Verze systému — VERSION soubor"
+- Lekce **#55** (single-source-of-truth metadata pattern)
+
+PROD ověřeno: `curl http://10.55.2.231:9000/` vrací `nav-badge ... v2.0`.
+
+---
+
 ## ⚠️ UPDATE 2026-05-04 (pozdní noc, ~19:30) — M1 final + BUG-010 FIXED
 
 **🎉 ZERO OPEN BUGS po dnešním marathonu.**
