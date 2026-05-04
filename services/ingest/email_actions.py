@@ -151,8 +151,8 @@ def _mark_spam(email_id: int, is_spam: bool, from_address: str = None):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE email_messages SET is_spam=%s, human_reviewed=TRUE, status='reviewed' WHERE id=%s",
-        (is_spam, email_id)
+        "UPDATE email_messages SET is_spam=%s, human_reviewed=TRUE, status=CASE WHEN %s THEN 'SMAZANÝ' ELSE 'ZPRACOVANÝ' END WHERE id=%s",
+        (is_spam, is_spam, email_id)
     )
     if from_address:
         cur.execute("""
@@ -329,18 +329,18 @@ def email_action(email_id: str, action: str):
 
     if action == "hotovo":
         conn = get_conn(); cur = conn.cursor()
-        cur.execute("UPDATE email_messages SET task_status='HOTOVO', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
+        cur.execute("UPDATE email_messages SET task_status='HOTOVO', human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s", (email_id,))
         conn.commit(); cur.close(); conn.close()
         imap_op = ("brogi", "HOTOVO")
     elif action == "precteno":
         folder = _folder_for_email(email_id)
         conn = get_conn(); cur = conn.cursor()
-        cur.execute("UPDATE email_messages SET task_status='HOTOVO', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
+        cur.execute("UPDATE email_messages SET task_status='HOTOVO', human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s", (email_id,))
         conn.commit(); cur.close(); conn.close()
         imap_op = ("brogi", folder)
     elif action == "ceka":
         conn = get_conn(); cur = conn.cursor()
-        cur.execute("UPDATE email_messages SET task_status='ČEKÁ-NA-MĚ', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
+        cur.execute("UPDATE email_messages SET task_status='ČEKÁ-NA-MĚ', human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s", (email_id,))
         conn.commit(); cur.close(); conn.close()
         imap_op = ("brogi", "CEKA")
         do_mark_read = False  # WAIT = zůstane unread
@@ -355,7 +355,7 @@ def email_action(email_id: str, action: str):
         # find_repeat_action může 2del navrhnout pro podobný vzor příště.
         conn = get_conn(); cur = conn.cursor()
         cur.execute(
-            "UPDATE email_messages SET human_reviewed=TRUE, status='reviewed' WHERE id=%s",
+            "UPDATE email_messages SET human_reviewed=TRUE, status='SMAZANÝ' WHERE id=%s",
             (email_id,)
         )
         conn.commit(); cur.close(); conn.close()
@@ -395,13 +395,13 @@ def email_action(email_id: str, action: str):
         conn = get_conn(); cur = conn.cursor()
         if task_id:
             cur.execute(
-                "UPDATE email_messages SET task_status='→OF', of_task_id=%s, of_linked_at=NOW(), human_reviewed=TRUE, status='reviewed' WHERE id=%s",
+                "UPDATE email_messages SET task_status='→OF', of_task_id=%s, of_linked_at=NOW(), human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s",
                 (task_id, email_id),
             )
             log.info(f"OF task linked: email_id={email_id} of_task_id={task_id}")
         else:
             cur.execute(
-                "UPDATE email_messages SET task_status='→OF', human_reviewed=TRUE, status='reviewed' WHERE id=%s",
+                "UPDATE email_messages SET task_status='→OF', human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s",
                 (email_id,),
             )
             log.warning(f"OF task created ale Bridge nevrátil task_id (degraded mode?): email_id={email_id}")
@@ -426,11 +426,11 @@ def email_action(email_id: str, action: str):
         conn = get_conn(); cur = conn.cursor()
         if rem_id:
             cur.execute(
-                "UPDATE email_messages SET task_status='→REM', rem_event_id=%s, human_reviewed=TRUE, status='reviewed' WHERE id=%s",
+                "UPDATE email_messages SET task_status='→REM', rem_event_id=%s, human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s",
                 (rem_id, email_id),
             )
         else:
-            cur.execute("UPDATE email_messages SET task_status='→REM', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
+            cur.execute("UPDATE email_messages SET task_status='→REM', human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s", (email_id,))
             log.warning(f"REM created bez id (Bridge return), undo nebude fungovat: email_id={email_id}")
         conn.commit(); cur.close(); conn.close()
         imap_op = ("brogi", "HOTOVO")
@@ -449,7 +449,7 @@ def email_action(email_id: str, action: str):
         if not ok:
             return
         conn = get_conn(); cur = conn.cursor()
-        cur.execute("UPDATE email_messages SET human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
+        cur.execute("UPDATE email_messages SET human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s", (email_id,))
         conn.commit(); cur.close(); conn.close()
         imap_op = ("brogi", "HOTOVO")
     elif action == "cal":
@@ -477,11 +477,11 @@ def email_action(email_id: str, action: str):
         conn = get_conn(); cur = conn.cursor()
         if cal_uid:
             cur.execute(
-                "UPDATE email_messages SET task_status='→CAL', cal_event_id=%s, human_reviewed=TRUE, status='reviewed' WHERE id=%s",
+                "UPDATE email_messages SET task_status='→CAL', cal_event_id=%s, human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s",
                 (cal_uid, email_id),
             )
         else:
-            cur.execute("UPDATE email_messages SET task_status='→CAL', human_reviewed=TRUE, status='reviewed' WHERE id=%s", (email_id,))
+            cur.execute("UPDATE email_messages SET task_status='→CAL', human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s", (email_id,))
             log.warning(f"CAL created bez UID (Bridge return), undo nebude fungovat: email_id={email_id}")
         conn.commit(); cur.close(); conn.close()
         imap_op = ("brogi", "HOTOVO")
@@ -561,7 +561,7 @@ def email_action(email_id: str, action: str):
             return
         conn = get_conn(); cur = conn.cursor()
         cur.execute(
-            "UPDATE email_messages SET task_status='→OF', of_task_id=%s, of_linked_at=NOW(), human_reviewed=TRUE, status='reviewed' WHERE id=%s",
+            "UPDATE email_messages SET task_status='→OF', of_task_id=%s, of_linked_at=NOW(), human_reviewed=TRUE, status='ZPRACOVANÝ' WHERE id=%s",
             (tid, email_id),
         )
         conn.commit(); cur.close(); conn.close()

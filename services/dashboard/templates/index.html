@@ -142,8 +142,12 @@
         'FAKTURA':'typ-doklad', 'NEWSLETTER':'typ-info', 'POTVRZENÍ':'typ-notifikace',
         'ESHOP':'typ-nabidka', 'SPAM':'typ-error'
       } %}
-      {# M3: STATUS kolečko — mapping legacy DB status → Email Semantics v1 #}
-      {% set sc = {'new':'novy', 'classified':'novy', 'reviewed':'zpracovany', 'ignored':'smazany'} %}
+      {# M3 + L1: STATUS kolečko — Email Semantics v1 (po sql/018) + legacy fallback #}
+      {% set sc = {
+          'NOVÝ':'novy', 'PŘEČTENÝ':'precteny', 'ČEKAJÍCÍ':'cekajici',
+          'ZPRACOVANÝ':'zpracovany', 'SMAZANÝ':'smazany',
+          'new':'novy', 'classified':'novy', 'reviewed':'zpracovany', 'ignored':'smazany'
+      } %}
       {% set sg = {'novy':'⏺', 'precteny':'▶', 'cekajici':'⏸', 'zpracovany':'⏏', 'smazany':'⏹'} %}
       {% set sl = {'novy':'NOVÝ', 'precteny':'PŘEČTENÝ', 'cekajici':'ČEKAJÍCÍ', 'zpracovany':'ZPRACOVANÝ', 'smazany':'SMAZANÝ'} %}
       {% set _s = sc.get(m.status, 'novy') %}

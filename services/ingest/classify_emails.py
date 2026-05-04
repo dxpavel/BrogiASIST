@@ -433,12 +433,15 @@ def _save_classification(email_id, firma, typ, task_status, is_spam, confidence,
     """
     conn = get_conn()
     cur = conn.cursor()
+    # L1: Email Semantics v1 — po klasifikaci email čeká na Pavlovo rozhodnutí.
+    # is_spam=TRUE override → SMAZANÝ (mark_spam path), jinak NOVÝ.
+    new_status = 'SMAZANÝ' if is_spam else 'NOVÝ'
     cur.execute("""
         UPDATE email_messages SET
             firma=%s, typ=%s, task_status=%s,
-            is_spam=%s, ai_confidence=%s, ai_source=%s, status='classified'
+            is_spam=%s, ai_confidence=%s, ai_source=%s, status=%s
         WHERE id=%s
-    """, (firma, typ, task_status, is_spam, confidence, ai_source, email_id))
+    """, (firma, typ, task_status, is_spam, confidence, ai_source, new_status, email_id))
     conn.commit()
     cur.close()
     conn.close()
