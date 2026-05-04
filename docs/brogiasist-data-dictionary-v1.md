@@ -1,8 +1,8 @@
 ---
 Název: Datový a procesní slovník BrogiASIST
 Soubor: docs/brogiasist-data-dictionary-v1.md
-Verze: 4.2 (release 1.1)
-Poslední aktualizace: 2026-04-26
+Verze: 4.3 (release v2 patch 2026-04-27)
+Poslední aktualizace: 2026-04-27
 Popis: DB schéma, procesní tok, AI vrstvy, Telegram pipeline — podle reality v kódu
 ---
 
@@ -25,19 +25,17 @@ raw kopie → PostgreSQL (mirror tabulka)
   2c. apple_contacts whitelist — odesílatel v kontaktech → blokuje AI spam
   3. Llama3.2 přes Ollama → firma / typ / task_status / is_spam / confidence
   4. Kontakt override: in_contacts AND is_spam → is_spam=False
-  5. Spam handling:
-     ├─ confidence ≥ 0.92 → auto trash + TG "🗑️ AUTO-SPAM"
-     └─ confidence < 0.92 → Claude Haiku verifikace (claude_sender_verdicts cache)
-          ├─ spam=True → trash + TG "🗑️ AUTO-SPAM Claude"
-          ├─ spam=False → is_spam=False, normální průchod
-          └─ error → fallback TG spam-check
+  5. Spam handling (⚠️ 2026-04-27 silent auto-trash VYPNUT — `SPAM_AUTO_THRESHOLD=2.0`):
+     ├─ Llama is_spam=TRUE → email PROCHÁZÍ jako normální, Pavel klikne 2spam/2del ručně v TG
+     └─ Claude Haiku fallback (cache `claude_sender_verdicts`) zůstává pro budoucí re-enable
   │
   ▼ DECIDE
-Auto-akce: chroma_client.find_repeat_action (≥3 podobné, cosine ≤0.15)
-Human review: notify_emails.py → Telegram inline tlačítka
+Návrh akce z Chromy: chroma_client.find_repeat_action_with_score (≥3 podobné, cosine ≤0.15)
+   → zvýraznění tlačítka v TG zprávě / štítek v Dashboard `/úkoly`, NE silent execute
+Human review: notify_emails.py → Telegram inline tlačítka (univerzální 3×3 layout)
   │
   ▼ EXECUTE (telegram_callback.py / api.py / classify_emails.py)
-hotovo / přečteno / spam / of / rem / note / unsub / skip / cal
+hotovo / přečteno / spam / of / rem / note / unsub / skip / cal / del
   │  imap_actions: mark_read | move_to_trash | move_to_brogi_folder
   │  DB update: folder, status='reviewed', human_reviewed=TRUE
   │  of: Apple Bridge /omnifocus/add_task (body_text[:1500] + file:// přílohy)
@@ -103,8 +101,19 @@ chroma_client.store_email_action → ChromaDB collection "email_actions"
 | `unsubscribe_url` | TEXT | URL pro odhlášení (z hlavičky List-Unsubscribe) |
 | `tg_notified_at` | TIMESTAMPTZ | kdy odeslána TG notifikace (NULL = ještě ne) |
 | `tg_message_id` | INTEGER | ID TG zprávy s tlačítky — pro pozdější `delete_message` po akci |
+| `message_id` | VARCHAR(998) | RFC 5322 Message-ID hlavička (migrace 014, pro threading) |
+| `in_reply_to` | VARCHAR(998) | RFC In-Reply-To hlavička (migrace 014, parent reference) |
+| `thread_id` | UUID | ID threadu (migrace 014, JOIN přes Message-ID/In-Reply-To) |
+| `of_task_id` | VARCHAR(128) | OmniFocus task.id() po `2of` akci (migrace 014, **používá se od H2 commit `e37f576`** pro thread continuation detection) |
+| `of_linked_at` | TIMESTAMPTZ | kdy linkováno na OF task |
+| `is_personal` | BOOLEAN | flag z decision_engine (migrace 014, sender_personal rule match) |
+| `force_tg_notify` | BOOLEAN | VIP rule flag (migrace 015) — vždy posílat TG notifikaci |
+| `no_auto_action` | BOOLEAN | (migrace 015) skip auto-spam-trash i při high confidence — Pavel rozhodne |
+| `no_auto_konstruktivni` | BOOLEAN | (migrace 015) gating pro budoucí silent auto-apply (2of/2cal/2note/2rem) |
+| `matched_rules` | TEXT[] | (migrace 015) audit: která decision_rules pravidla matchla |
+| `matched_groups` | TEXT[] | (migrace 015) Apple Contacts skupiny odesílatele (z group rules) |
 
-Indexy: `status`, `mailbox`, `sent_at DESC`, `from_address`, `is_spam`, `firma`, `typ`
+Indexy: `status`, `mailbox`, `sent_at DESC`, `from_address`, `is_spam`, `firma`, `typ`, partial `message_id WHERE NOT NULL`, `thread_id WHERE NOT NULL`, `of_task_id WHERE NOT NULL`, `is_personal WHERE TRUE`, `force_tg_notify WHERE TRUE`
 
 ---
 
@@ -319,14 +328,16 @@ Indexy: `(source_type, source_id)`, `status`
 | `id` | `email_messages.id` (UUID jako string) |
 | `embedding` | vektor z Ollama `nomic-embed-text` (cosine space) |
 | `document` | `"<from_address> <subject> <body[:400]>"` |
-| `metadata.action` | `mark_read` / `hotovo` / `precteno` / `spam` / `unsub` / `of` / `rem` / `note` / `ceka` |
+| `metadata.action` | `mark_read` / `hotovo` / `precteno` / `spam` / `unsub` / `of` / `rem` / `note` / `ceka` / `del` (2026-04-27) |
 | `metadata.typ` | klasifikace (NEWSLETTER, FAKTURA, …) |
 | `metadata.firma` | klasifikace |
 | `metadata.mailbox` | email adresa účtu |
 
 **Použití:**
 - `store_email_action()` po každé akci (auto / TG / WebUI)
-- `find_repeat_action()` před TG notifikací — pokud najde ≥3 podobné s cosine ≤0.15 a stejnou akcí → automatická exekuce, žádná TG zpráva
+- `find_repeat_action_with_score()` před TG notifikací — pokud najde ≥3 podobné s cosine ≤0.15 a stejnou akcí → **návrh** (zvýrazněné tlačítko `⭐ 2X ⭐` v TG, žluté tlačítko + štítek v Dashboard `/úkoly`). Silent auto-execute zrušen 2026-04-27.
+- Backward-compat wrapper `find_repeat_action()` zachován pro stará volání.
+- Endpoint `POST /emails/suggested` (services/ingest/api.py) — batch verze pro Dashboard route `/úkoly`.
 - Konstanty: `AUTO_THRESHOLD_COUNT=3`, `AUTO_THRESHOLD_DIST=0.15`
 
 ---
@@ -532,25 +543,22 @@ email_messages INSERT (status='new') + přílohy → attachments tabulka + disk
 3. Llama3.2 → JSON: firma, typ, task_status, is_spam, confidence, reason
 4. Kontakt override: if in_contacts AND is_spam → is_spam=False
 5. _save_classification (status='classified')
-6. Spam handling:
-   ├─ is_spam AND confidence ≥ 0.92 → move_to_trash + TG "🗑️ AUTO-SPAM (X%)"
-   └─ is_spam AND confidence < 0.92 → _claude_verify_spam()
-        ├─ cache hit (claude_sender_verdicts) → žádné API volání
-        ├─ cache miss → Claude Haiku API → INSERT claude_sender_verdicts
-        ├─ claude.is_spam=True → move_to_trash + TG "🗑️ AUTO-SPAM Claude [cache] (X%)"
-        ├─ claude.is_spam=False → _save_classification(is_spam=False), normální průchod
-        └─ claude=None (error) → send_spam_check (TG spam-check s tlačítky)
+6. Spam handling (⚠️ 2026-04-27 silent auto-trash VYPNUT — `SPAM_AUTO_THRESHOLD=2.0`):
+   └─ is_spam=TRUE → email PROCHÁZÍ jako normální, Pavel klikne 2spam/2del v TG.
+      Claude Haiku verifikace + `claude_sender_verdicts` cache se zachovaly v kódu
+      pro budoucí re-enable, ale silent move_to_trash neběží.
 7. Auto-move: confidence ≥ 0.85 AND typ IN (NOTIFIKACE,NEWSLETTER,ESHOP,POTVRZENÍ,FAKTURA)
    → move_to_brogi_folder(<typ>)
   │
   ▼ notify_emails.py (každé 2 min)
 SELECT WHERE typ IS NOT NULL AND is_spam=FALSE AND tg_notified_at IS NULL
   │
-  ▼ Před TG zprávou: chroma_client.find_repeat_action(from, subject, body)
-  │   → pokud match: provede akci automaticky (mark_read / hotovo / move / …)
-  │   → store_email_action po akci + TG "🔁 Opakuji akci: X"
+  ▼ Před TG zprávou: chroma_client.find_repeat_action_with_score(from, subject, body)
+  │   → pokud match: TG zpráva má extra řádek `⭐ Navrženo: 2X (NN%) ⭐`
+  │     a v 3×3 layoutu obalí predikované tlačítko hvězdičkami `⭐ 2X ⭐`.
+  │     **NEexekuuje** akci — Pavel musí kliknout (silent auto-apply zrušen 2026-04-27).
   │
-  ▼ Pokud žádný pattern: pošli TG zprávu s inline tlačítky
+  ▼ Pošle TG zprávu s univerzálním 3×3 layoutem inline tlačítek
 → nastav tg_notified_at=NOW(), tg_message_id=<msg_id>
   │
   ▼ telegram_callback.py (polling každé 2s — daemon thread)
@@ -564,6 +572,7 @@ Zpracuj kliknutí:
   note     → POST apple-bridge /notes/add + move_to_brogi_folder(HOTOVO)
   cal      → POST apple-bridge /calendar/add + move_to_brogi_folder(HOTOVO)
   unsub    → is_spam=TRUE pro celý from_address + classification_rules INSERT + move_to_trash
+  del      → human_reviewed=TRUE + status='reviewed' + move_to_trash (BEZ classification_rules INSERT — jednorázové smazání). 2026-04-27.
   skip     → jen answer_callback, nic nemění
   │
   ▼ Po každé akci:
@@ -581,6 +590,7 @@ Zpracuj kliknutí:
 - `email:note:{id}`
 - `email:cal:{id}`
 - `email:unsub:{id}`
+- `email:del:{id}` (2026-04-27)
 - `email:skip:{id}`
 - `spam:yes:{id}` (legacy)
 - `spam:no:{id}` (legacy)
@@ -621,12 +631,12 @@ topic_signals (keyword seznam)
 - URL: `http://host.docker.internal:11434`
 - Nastupuje pokud vrstva 1 nemá pravidlo
 - Výstup: JSON s `firma` / `typ` / `task_status` / `is_spam` / `confidence` / `reason`
-- Auto-spam threshold: `confidence > 0.92` → označí bez TG notifikace
+- Auto-spam threshold: `SPAM_AUTO_THRESHOLD=2.0` (= nikdy aktivní; dočasně vypnuto 2026-04-27 po race condition incidentu — viz lessons-learned sekce 38)
 
 ### Vrstva 3 — Claude Haiku (spam verifikace)
 - Model: `claude-haiku-4-5` přes Anthropic API (httpx, bez SDK)
 - URL: `https://api.anthropic.com/v1/messages`
-- Nastupuje pokud Llama označí spam s `confidence < 0.92`
+- Nastupuje pokud Llama označí spam s `confidence < 0.92` (kód zachován; aktuálně dormant kvůli `SPAM_AUTO_THRESHOLD=2.0`)
 - **Cache**: `claude_sender_verdicts` — každý odesílatel verifikován max. jednou
 - Výstup: `{"is_spam": bool, "reason": "1 věta"}`
 - Fallback: pokud API selže → TG spam-check (neztrácíme email)
@@ -681,6 +691,65 @@ topic_signals (keyword seznam)
 
 ---
 
+## Nové tabulky v 2026-04-26 (branch `2` — release v2)
+
+### `decision_rules` (sql/013) — konfigurovatelný rozhodovací stroj
+
+| Sloupec | Typ | Popis |
+|---|---|---|
+| id | SERIAL PK | |
+| priority | INTEGER NOT NULL | nižší = dřív (range 5–99) |
+| rule_name | VARCHAR(64) UNIQUE | např. `header_list`, `group_vip` |
+| condition_type | VARCHAR(32) | `header` / `group` / `chroma` / `sender` / `ai_fallback` |
+| condition_value | JSONB | per condition_type payload (např. `{"header":"List-Id","operator":"exists"}`) |
+| action_type | VARCHAR(32) | `end` / `flag` / `apply_remembered` / `run_llama` |
+| action_value | JSONB | např. `{"typ":"LIST","action":"2hotovo"}` pro action_type='end' |
+| enabled | BOOLEAN DEFAULT TRUE | |
+| created_at, updated_at | TIMESTAMPTZ | |
+
+Index `idx_decision_rules_priority` partial WHERE enabled = TRUE.
+
+Engine: `services/ingest/decision_engine.py:evaluate_email(email)`.
+
+### `pending_actions` (sql/014) — queue pro Apple Bridge degraded mode
+
+| Sloupec | Typ | Popis |
+|---|---|---|
+| id | SERIAL PK | |
+| email_id | UUID NOT NULL FK | reference na `email_messages(id)` ON DELETE CASCADE |
+| action | VARCHAR(16) | např. `2of`, `2cal`, `2note`, `2rem` |
+| action_data | JSONB | payload pro Apple Bridge call: `{"path": "/omnifocus/add_task", "payload": {...}}` |
+| created_at | TIMESTAMPTZ DEFAULT now() | |
+| attempts | INTEGER DEFAULT 0 | retry counter |
+| last_attempt_at | TIMESTAMPTZ | |
+| last_error | TEXT | |
+| status | VARCHAR(16) DEFAULT 'pending' | `pending` / `processing` / `done` / `failed` |
+
+Index partial WHERE status='pending' (drain query optimization).
+
+Worker: `services/ingest/pending_worker.py:drain_queue()` — interval 1 min, throttle 2s.
+
+## Nové sloupce v 2026-04-26 (branch `2`)
+
+### `email_messages` (sql/014)
+- `message_id` VARCHAR(998) — RFC 5322 Message-ID header (pro threading + dedup)
+- `in_reply_to` VARCHAR(998) — RFC 5322 In-Reply-To header
+- `thread_id` UUID — root id threadu (= id prvního emailu, nebo self.id pokud root)
+- `of_task_id` VARCHAR(128) — OmniFocus task ID po klepnutí na 2of
+- `of_linked_at` TIMESTAMPTZ
+- `is_personal` BOOLEAN DEFAULT FALSE — z decision_rules sender_personal pravidla
+
+Indexy: `idx_email_messages_message_id` / `_thread_id` / `_of_task_id` (partial WHERE NOT NULL).
+
+`raw_payload.headers` (jsonb subkey, blocker A) — 13 RFC 5322 hlaviček: Message-ID, In-Reply-To, References, List-Id, List-Unsubscribe, List-Post, Auto-Submitted, Content-Type, Cc, Bcc, Reply-To, Return-Path, X-Mailer.
+
+### `apple_contacts` (sql/012)
+- `groups` JSONB DEFAULT `'[]'` — array názvů skupin z Apple Contacts (např. `["MEDVEDI 🧸", "VIP ⏰"]`)
+
+GIN index `idx_apple_contacts_groups` pro rychlý lookup `groups @> '[...]'::jsonb`.
+
+---
+
 ## Stav implementace
 
 | Komponenta | Stav | Poznámka |
@@ -707,6 +776,20 @@ topic_signals (keyword seznam)
 | TG Unsub tlačítko | ✅ | přidáno do UNIVERSAL_BUTTONS |
 | TG auto-spam notifikace | ✅ | `🗑️ AUTO-SPAM` při automatickém přesunu do koše |
 | OF body_text + přílohy | ✅ | `body_text[:1500]` + `file://` linky v note |
+| **decision_rules engine** (v2) | ✅ | `decision_engine.py`, 9 pravidel v DB, runs PŘED Llamou |
+| **Apple Contacts groups** (v2) | ✅ | `/contacts/all` JXA endpoint, hash check, 12h interval |
+| **RFC 5322 headers v ingestu** (v2) | ✅ | 13 hlaviček v `raw_payload.headers` |
+| **Threading** (v2 — schema) | ✅ | message_id, in_reply_to, thread_id sloupce |
+| **Threading TG flow** (v2 — UI) | ⏳ | endpointy ready, callbacks TODO |
+| **Pending queue worker** (v2) | ✅ | `pending_worker.py`, interval 1 min |
+| **Apple Bridge BUG-008 fix** (v2) | ✅ | `os.posix_spawn()` místo subprocess.run() |
+| **Per-TYP TG tlačítka** (v2) | ✅ | `notify_emails:_buttons_for_typ()` |
+| **Llama prompt 6 TYPů** (v2) | ✅ | ÚKOL/DOKLAD/NABÍDKA/NOTIFIKACE/POZVÁNKA/INFO |
+| **Decision rules group matching** | 🍎 BUG-009 | data ve 2 disjoint datasets, fix: rozšířit JXA o emails |
+| **Action wiring decision flagů** (v2) | ⏳ TODO | flagy z engine zatím ignorovány |
+| **Calendar reply / Mail send** (v2) | 🍎 BUG-010 | Mail.app neumí custom headers |
+| **Grafická spec sekce 19** (v2) | ✅ | CSS variables + třídy + email tabulka kostičky |
+| **CLS fix** (v2) | ✅ | display=optional + img dimensions |
 | `actions` tabulka — confirmation workflow | ❌ | tabulka existuje, kód nepoužívá |
 | iMessage ingest | ❌ | sqlite přístup znám, skript chybí |
 | Claude API — spam verifikace | ✅ | `_claude_verify_spam()` + `claude_sender_verdicts` cache |

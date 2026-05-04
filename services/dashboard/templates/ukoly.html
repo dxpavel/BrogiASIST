@@ -24,7 +24,10 @@
 .act-btn.red   { border-color:#5a2a2a; color:var(--red); }
 .act-btn.blue  { border-color:#1a3a5a; color:var(--blue); }
 .act-btn.yellow{ border-color:#5a4a1a; color:var(--yellow); }
+.act-btn.star  { border-color:var(--yellow); color:var(--yellow); background:#2a2410; box-shadow: 0 0 6px rgba(245,200,40,.45); font-weight:800; }
+.act-btn.star:hover { background:#3a3414; }
 .act-btns { display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end; }
+.suggest-tag { display:inline-block; font-size:9px; font-weight:700; color:var(--yellow); background:#2a2410; border:1px solid var(--yellow); padding:1px 5px; border-radius:3px; margin-left:6px; }
 .typ-ÚKOL      { color: var(--orange); font-weight: 700; }
 .typ-FAKTURA   { color: var(--yellow); font-weight: 700; }
 .typ-NABÍDKA   { color: var(--blue); }
@@ -46,27 +49,30 @@
   <div style="display:grid; grid-template-columns: 70px 80px 55px 1fr 80px 90px; gap:8px; padding:4px 0 6px; border-bottom: 1px solid var(--border); font-size:9px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em">
     <span>Typ</span><span>Mailbox</span><span>TG</span><span>Předmět</span><span>Firma</span><span>Přijato</span>
   </div>
+  {% set action_2x = {"of":"2of","rem":"2rem","cal":"2cal","note":"2note","hotovo":"2hotovo","ceka":"2ceka","precteno":"Otevřu sám","unsub":"2unsub","del":"2del","spam":"2spam","skip":"2skip"} %}
   {% for e in emails %}
+  {% set sa = e.suggested.action if e.suggested else None %}
   <div class="email-row">
     <div>
       <div><span class="mono typ-{{ e.typ }}" style="font-size:10px">{{ e.typ }}</span> <span style="font-size:9px;color:var(--muted)">{{ e.mailbox }}</span></div>
       <div style="font-size:9px;color:var(--muted)">{% if e.sent_at %}{{ e.sent_at.strftime('%d.%m %H:%M') }}{% endif %}</div>
     </div>
     <div style="overflow:hidden;min-width:0">
-      <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500">{{ e.subject }}</div>
+      <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500">{{ e.subject }}{% if sa %}<span class="suggest-tag" title="Z minulosti: tento vzor → {{ action_2x.get(sa, sa) }}">⭐ Navrženo: {{ action_2x.get(sa, sa) }} ({{ e.suggested.confidence_pct }}%)</span>{% endif %}</div>
       <div style="font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.from_address }}</div>
     </div>
     <div class="act-btns">
-      <button class="act-btn blue"   onclick="doAction('{{ e.id }}','of')">📋 OF</button>
-      <button class="act-btn yellow" onclick="doAction('{{ e.id }}','rem')">⏰ REM</button>
-      <button class="act-btn blue"   onclick="doAction('{{ e.id }}','cal')">📅 CAL</button>
-      <button class="act-btn"        onclick="doAction('{{ e.id }}','note')">📝 NOTE</button>
-      <button class="act-btn green"  onclick="doAction('{{ e.id }}','hotovo')">✅ Hotovo</button>
-      <button class="act-btn yellow" onclick="doAction('{{ e.id }}','ceka')">⏳ Čeká</button>
-      <button class="act-btn green"  onclick="doAction('{{ e.id }}','precteno')">👁 Přečteno</button>
-      <button class="act-btn red"    onclick="doAction('{{ e.id }}','unsub')">🚫 Odhlásit</button>
-      <button class="act-btn red"    onclick="doAction('{{ e.id }}','spam')">🗑 Spam</button>
-      <button class="act-btn"        onclick="doAction('{{ e.id }}','skip')">⏭ Skip</button>
+      <button class="act-btn blue   {% if sa=='of' %}star{% endif %}"     onclick="doAction('{{ e.id }}','of')">{% if sa=='of' %}⭐ 2of ⭐{% else %}📋 OF{% endif %}</button>
+      <button class="act-btn yellow {% if sa=='rem' %}star{% endif %}"    onclick="doAction('{{ e.id }}','rem')">{% if sa=='rem' %}⭐ 2rem ⭐{% else %}⏰ REM{% endif %}</button>
+      <button class="act-btn blue   {% if sa=='cal' %}star{% endif %}"    onclick="doAction('{{ e.id }}','cal')">{% if sa=='cal' %}⭐ 2cal ⭐{% else %}📅 CAL{% endif %}</button>
+      <button class="act-btn        {% if sa=='note' %}star{% endif %}"   onclick="doAction('{{ e.id }}','note')">{% if sa=='note' %}⭐ 2note ⭐{% else %}📝 NOTE{% endif %}</button>
+      <button class="act-btn green  {% if sa=='hotovo' %}star{% endif %}" onclick="doAction('{{ e.id }}','hotovo')">{% if sa=='hotovo' %}⭐ 2hotovo ⭐{% else %}✅ Hotovo{% endif %}</button>
+      <button class="act-btn yellow {% if sa=='ceka' %}star{% endif %}"   onclick="doAction('{{ e.id }}','ceka')">{% if sa=='ceka' %}⭐ 2ceka ⭐{% else %}⏳ Čeká{% endif %}</button>
+      <button class="act-btn green  {% if sa=='precteno' %}star{% endif %}" onclick="doAction('{{ e.id }}','precteno')">{% if sa=='precteno' %}⭐ Otevřu sám ⭐{% else %}👁 Přečteno{% endif %}</button>
+      <button class="act-btn red    {% if sa=='unsub' %}star{% endif %}"  onclick="doAction('{{ e.id }}','unsub')">{% if sa=='unsub' %}⭐ 2unsub ⭐{% else %}🚫 Odhlásit{% endif %}</button>
+      <button class="act-btn red    {% if sa=='del' %}star{% endif %}"    onclick="doAction('{{ e.id }}','del')">{% if sa=='del' %}⭐ 2del ⭐{% else %}🗑 Smazat{% endif %}</button>
+      <button class="act-btn red    {% if sa=='spam' %}star{% endif %}"   onclick="doAction('{{ e.id }}','spam')">{% if sa=='spam' %}⭐ 2spam ⭐{% else %}🚫 Spam{% endif %}</button>
+      <button class="act-btn        {% if sa=='skip' %}star{% endif %}"   onclick="doAction('{{ e.id }}','skip')">{% if sa=='skip' %}⭐ 2skip ⭐{% else %}⏭ Skip{% endif %}</button>
     </div>
   </div>
   {% endfor %}

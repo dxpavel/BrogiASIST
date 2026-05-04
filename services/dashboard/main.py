@@ -33,7 +33,7 @@ def get_db_status() -> dict:
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
 
-        tables = ["email_messages", "rss_articles", "youtube_videos", "mantis_issues", "omnifocus_tasks", "actions", "sessions", "config", "attachments"]
+        tables = ["email_messages", "rss_articles", "youtube_videos", "mantis_issues", "omnifocus_tasks", "apple_contacts", "actions", "sessions", "config", "attachments"]
         counts = {}
         for t in tables:
             cur.execute(f"SELECT COUNT(*) FROM {t}")
@@ -74,7 +74,7 @@ def get_db_status() -> dict:
         ]
 
         cur.execute("""
-            SELECT id, mailbox, from_address, subject, sent_at, firma, typ, task_status, is_spam, ai_confidence, human_reviewed
+            SELECT id, mailbox, from_address, subject, sent_at, firma, typ, task_status, is_spam, ai_confidence, human_reviewed, source_id, mail_indexed, status
             FROM email_messages
             WHERE is_spam = FALSE
             ORDER BY sent_at DESC NULLS LAST
@@ -96,7 +96,7 @@ def get_db_status() -> dict:
              "from_address": r[2] or "—",
              "subject": r[3] or "(bez předmětu)", "sent_at": r[4],
              "firma": r[5], "typ": r[6], "task_status": r[7], "is_spam": r[8],
-             "confidence": r[9], "human_reviewed": r[10]}
+             "confidence": r[9], "human_reviewed": r[10], "source_id": r[11], "mail_indexed": r[12], "status": r[13]}
             for r in cur.fetchall()
         ]
 
@@ -398,16 +398,170 @@ async def obsah(request: Request):
 
 @app.get("/pravidla", response_class=HTMLResponse)
 async def pravidla(request: Request):
+    rules = []
+    decision_rules = []
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
         cur.execute("SELECT id, rule_type, match_field, match_value, result_value, confidence, hit_count, updated_at FROM classification_rules ORDER BY hit_count DESC, updated_at DESC")
         rules = [{"id": r[0], "rule_type": r[1], "match_field": r[2], "match_value": r[3],
                   "result_value": r[4], "confidence": r[5], "hit_count": r[6], "updated_at": r[7]} for r in cur.fetchall()]
+        # M4: decision_rules engine
+        try:
+            cur.execute("""
+                SELECT id, priority, rule_name, condition_type, condition_value,
+                       action_type, action_value, enabled, description, updated_at
+                FROM decision_rules ORDER BY priority ASC, id ASC
+            """)
+            import json as _json
+            decision_rules = [{
+                "id": r[0], "priority": r[1], "rule_name": r[2],
+                "condition_type": r[3],
+                "condition_value": _json.dumps(r[4], ensure_ascii=False),
+                "action_type": r[5],
+                "action_value": _json.dumps(r[6], ensure_ascii=False),
+                "enabled": r[7], "description": r[8] or "",
+                "updated_at": r[9].strftime("%Y-%m-%d %H:%M") if r[9] else "",
+            } for r in cur.fetchall()]
+        except Exception:
+            decision_rules = []
         conn.close()
     except Exception:
         rules = []
-    return templates.TemplateResponse("pravidla.html", {"request": request, "rules": rules, "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    return templates.TemplateResponse("pravidla.html", {
+        "request": request, "rules": rules, "decision_rules": decision_rules,
+        "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
+
+
+# ===== M4: Decision Rules CRUD API =====
+
+class DecisionRuleIn(BaseModel):
+    priority: int
+    rule_name: str
+    condition_type: str
+    condition_value: dict | list
+    action_type: str
+    action_value: dict | list
+    enabled: bool = True
+    description: str | None = None
+
+
+@app.post("/api/decision-rules")
+async def api_decision_rule_create(payload: DecisionRuleIn):
+    import json as _json
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO decision_rules (priority, rule_name, condition_type, condition_value,
+                                        action_type, action_value, enabled, description)
+            VALUES (%s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s)
+            RETURNING id
+        """, (payload.priority, payload.rule_name, payload.condition_type,
+              _json.dumps(payload.condition_value), payload.action_type,
+              _json.dumps(payload.action_value), payload.enabled, payload.description))
+        new_id = cur.fetchone()[0]
+        conn.commit()
+        conn.close()
+        return {"ok": True, "id": new_id}
+    except psycopg2.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail=f"rule_name '{payload.rule_name}' už existuje")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/api/decision-rules/{rule_id}")
+async def api_decision_rule_update(rule_id: int, payload: DecisionRuleIn):
+    import json as _json
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE decision_rules
+            SET priority=%s, rule_name=%s, condition_type=%s, condition_value=%s::jsonb,
+                action_type=%s, action_value=%s::jsonb, enabled=%s, description=%s,
+                updated_at=NOW()
+            WHERE id=%s
+            RETURNING id
+        """, (payload.priority, payload.rule_name, payload.condition_type,
+              _json.dumps(payload.condition_value), payload.action_type,
+              _json.dumps(payload.action_value), payload.enabled, payload.description,
+              rule_id))
+        row = cur.fetchone()
+        conn.commit()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="Pravidlo nenalezeno")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.patch("/api/decision-rules/{rule_id}/toggle")
+async def api_decision_rule_toggle(rule_id: int):
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("UPDATE decision_rules SET enabled = NOT enabled, updated_at=NOW() WHERE id=%s RETURNING enabled",
+                    (rule_id,))
+        row = cur.fetchone()
+        conn.commit()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="Pravidlo nenalezeno")
+        return {"ok": True, "enabled": row[0]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class DecisionRuleReorder(BaseModel):
+    ids: list[int]
+
+
+@app.patch("/api/decision-rules/reorder")
+async def api_decision_rule_reorder(payload: DecisionRuleReorder):
+    """P2: drag&drop reorder — přepočítá priority na 10, 20, 30, ...
+    podle pořadí ID v payloadu (top → bottom v UI tabulce)."""
+    if not payload.ids:
+        raise HTTPException(status_code=400, detail="ids prázdný")
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        new_priorities = {}
+        for idx, rid in enumerate(payload.ids):
+            new_prio = (idx + 1) * 10
+            cur.execute("UPDATE decision_rules SET priority=%s, updated_at=NOW() WHERE id=%s RETURNING id",
+                        (new_prio, rid))
+            if cur.fetchone():
+                new_priorities[rid] = new_prio
+        conn.commit()
+        conn.close()
+        return {"ok": True, "priorities": new_priorities}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/decision-rules/{rule_id}")
+async def api_decision_rule_delete(rule_id: int):
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM decision_rules WHERE id=%s RETURNING id", (rule_id,))
+        row = cur.fetchone()
+        conn.commit()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="Pravidlo nenalezeno")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/ukoly", response_class=HTMLResponse)
@@ -439,8 +593,24 @@ async def ukoly(request: Request):
                    "from_address": r[2] or "", "subject": r[3] or "(bez předmětu)",
                    "typ": r[4], "firma": r[5] or "",
                    "confidence": f"{int((r[6] or 0)*100)}%",
-                   "sent_at": r[7], "notified": r[8] is not None} for r in cur.fetchall()]
+                   "sent_at": r[7], "notified": r[8] is not None,
+                   "suggested": None} for r in cur.fetchall()]
         conn.close()
+
+        # Chroma predikce per email (batch call do ingest API).
+        # Pokud selže nebo timeout, prostě bez návrhů — UI funguje dál.
+        if emails:
+            try:
+                ids = [e["id"] for e in emails]
+                r = httpx.post(f"{INGEST_URL}/emails/suggested",
+                               json={"ids": ids}, timeout=10)
+                if r.status_code == 200:
+                    sug_map = r.json() or {}
+                    for e in emails:
+                        e["suggested"] = sug_map.get(e["id"])
+            except Exception as _se:
+                import logging as _log
+                _log.getLogger("ukoly").warning(f"emails/suggested fail: {_se}")
     except Exception as _e:
         import logging as _log
         _log.getLogger("ukoly").error(f"Ukoly route chyba: {_e}")
@@ -452,6 +622,7 @@ async def ukoly(request: Request):
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request):
+    ai_source_stats = []
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
@@ -459,6 +630,17 @@ async def admin_page(request: Request):
         topics_raw = cur.fetchall()
         cur.execute("SELECT id, topic_id, signal_type, value FROM topic_signals ORDER BY signal_type, value")
         signals_raw = cur.fetchall()
+        # M5 session 2: ai_source distribuce — kalibrace pro Claude verify threshold
+        cur.execute("""
+            SELECT COALESCE(ai_source, 'unknown') AS src, COUNT(*),
+                   ROUND(AVG(ai_confidence)::numeric, 3) AS avg_conf
+            FROM email_messages
+            WHERE typ IS NOT NULL
+            GROUP BY ai_source
+            ORDER BY 2 DESC
+        """)
+        ai_source_stats = [{"source": r[0], "count": r[1], "avg_conf": float(r[2]) if r[2] is not None else None}
+                           for r in cur.fetchall()]
         conn.close()
         topics = [{"id": r[0], "name": r[1], "parent_id": r[2], "priority": r[3], "description": r[4]} for r in topics_raw]
         signals = {}
@@ -474,6 +656,7 @@ async def admin_page(request: Request):
         topics = []
     return templates.TemplateResponse("admin.html", {
         "request": request, "topics": parents, "all_topics": topics,
+        "ai_source_stats": ai_source_stats,
         "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
 
@@ -537,6 +720,31 @@ async def api_signal_delete(signal_id: int):
         cur.execute("DELETE FROM topic_signals WHERE id=%s", (signal_id,))
         conn.commit(); conn.close()
         return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/email/{email_id}/mark-not-indexed")
+async def mark_email_not_indexed(email_id: str):
+    """Označí email jako mail_indexed=FALSE (volá frontend po 404 z mail-bridge /open)."""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE email_messages
+               SET mail_indexed = FALSE,
+                   mail_indexed_checked_at = now()
+             WHERE id = %s
+            RETURNING id
+        """, (email_id,))
+        row = cur.fetchone()
+        conn.commit()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="email not found")
+        return {"ok": True, "id": str(row[0])}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

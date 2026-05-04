@@ -1,7 +1,7 @@
 # BrogiASIST — Lessons Learned v1
 
 > Jazyk: česky. Určeno pro budoucí vývojáře nebo AI asistenty, kteří na projektu pracují.
-> Stav: 2026-04-26 (release 1.1). Aktualizuj při každém novém zjištění.
+> Stav: 2026-04-27 (release v2 patch). Aktualizuj při každém novém zjištění.
 
 ---
 
@@ -704,6 +704,628 @@ url = f"file://{urllib.parse.quote(path, safe='/')}"
 ý   → %C3%BD
 mezera → %20
 ```
+
+---
+
+## 35. macOS fork() bug v multi-threaded Python — `os.posix_spawn()` je jediný spolehlivý fix (2026-04-26)
+
+### Co se stalo
+Apple Bridge na PajaAppleStudio náhodně padal s `EXC_BAD_ACCESS (SIGSEGV)`
+v `Network.framework atfork hook` (cca 1× za 15 min, 2× za den). Stack trace:
+
+```
+*** multi-threaded process forked ***
+crashed on child side of fork pre-exec
+0  libsystem_trace      _os_log_preferences_refresh + 56
+2  libnetworkextension  NEFlowDirectorDestroy + 64
+4  Network              nw_settings_child_has_forked() + 296
+5  libsystem_pthread    _pthread_atfork_child_handlers + 76
+6  libsystem_c          fork + 112
+7  _posixsubprocess     do_fork_exec + 68
+```
+
+uvicorn (FastAPI) má vlákna; `subprocess.run()` volá `fork()`+`exec()`; v child
+po fork() Apple's atfork hooks (Network.framework) selhávají při refreshi
+log preferences → SIGSEGV.
+
+### Co nefungovalo
+- **Workaround #1**: env var `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` v launchd
+  plistu. Apple deprecated, na **macOS 26.4.1 ho ignoruje**. Nasazeno 19:33,
+  další crash o 15 minut později.
+- Restart `tccd`, restart Bridge — žádný efekt.
+
+### Proper fix (FUNGUJE)
+Nahradit `subprocess.run()` za `os.posix_spawn()` v `run_applescript`/`run_jxa`
+wrapperech v `services/apple-bridge/main.py`:
+
+```python
+def _spawn_osascript(args, timeout):
+    stdout_r, stdout_w = os.pipe()
+    stderr_r, stderr_w = os.pipe()
+    file_actions = [
+        (os.POSIX_SPAWN_DUP2, stdout_w, 1),
+        (os.POSIX_SPAWN_CLOSE, stdout_r),
+        (os.POSIX_SPAWN_DUP2, stderr_w, 2),
+        (os.POSIX_SPAWN_CLOSE, stderr_r),
+    ]
+    pid = os.posix_spawn('/usr/bin/osascript', args, os.environ, file_actions=file_actions)
+    # ... pipe read + waitpid
+```
+
+`posix_spawn()` je **atomický syscall** — nedělá fork() + exec() postupně,
+neprovádí kopii address space, **atfork hooks se nevolají** → bug se neprojeví.
+
+### Verifikace
+50 requestů na `/omnifocus/tasks` (5 paralelních osascript subprocesů),
+21 minut zátěže lokálně → **0 nových crash reportů**. Předtím by Bridge
+spadl několikrát.
+
+### Lekce
+- **Apple od macOS Catalina nedoporučuje fork() v multi-threaded apps.**
+  Pokud Python aplikace má threadpool (uvicorn/Flask) a volá subprocess,
+  riziko že atfork hooks zlomí child proces.
+- `OBJC_DISABLE_INITIALIZE_FORK_SAFETY` je **deprecated** — Apple ho v některém
+  release přestal honorovat (jistě v 26.x). Nespoléhat na něj.
+- `os.posix_spawn()` je Python 3.8+ řešení. Nízkoúrovňové (file_actions pro
+  pipes), ale spolehlivé.
+- Detail v `docs/BUGS.md` BUG-008.
+
+---
+
+## 36. macOS TCC (Full Disk Access) — launchd-spawned procesy NEDĚDÍ FDA z user FDA seznamu (2026-04-26)
+
+### Co se stalo
+Apple Bridge přes launchd potřeboval číst `~/Library/Application Support/AddressBook/`
+(Apple Contacts sqlite databáze) → `PermissionError: Operation not permitted`.
+
+Pavel přidal **Python.app do System Settings → Privacy & Security → Full Disk
+Access** (toggle ON, přesná cesta `/opt/homebrew/Cellar/python@3.11/3.11.15/...
+/Python.app`). Bridge restartován přes `launchctl unload + load`. **Stále
+PermissionError.**
+
+Sequence diagnostiky:
+- Smazat oba Python entries → re-add přes Cmd+Shift+G s přesnou cestou → restart Bridge → fail
+- `sudo killall tccd` (TCC daemon reset) → restart Bridge → **fail**
+- Změnit plist aby spouštěl Python přímo (bez bash run.sh wrapper) → fail
+
+### Příčina
+**TCC FDA permissions per-process zohledňují responsible parent app**, ne
+přímý executable. Pro launchd-spawned LaunchAgents je responsible parent =
+launchd (system process), který **nemá FDA**, a permission **se nedědí**
+z user FDA seznamu.
+
+Když Pavel spustil **stejný Python skript z Terminal.app** na Apple Studio
+(přes ssh + manuálně), permission projde — Terminal.app má FDA + ten Python
+proces je child Terminalu = dědí FDA.
+
+### Workaround / pivot
+**Apple Contacts má separátní permission "Automation" (AppleEvents)** —
+nezávislé na FDA. JXA volání `Application('Contacts').people()` projde přes
+Automation permission (Pavel dialog při prvním volání → Allow).
+
+Apple Bridge `/contacts/all` přepsán z `sqlite3` direct read na **JXA**:
+
+```python
+script = '''
+const contacts = Application('Contacts');
+contacts.includeStandardAdditions = false;
+const groupMap = {};
+for (let g of contacts.groups()) { ... }
+const people = contacts.people();
+// per kontakt: id, firstName, lastName, organization, groups[]
+'''
+contacts_data = run_jxa(script, timeout=240)
+```
+
+Trvá ~100s pro 1180 kontaktů (5x víc než sqlite), ale **nepotřebuje FDA**.
+
+### Lekce
+- Pro launchd-spawned procesy je **FDA cesta zlomená** na macOS 26.x. Pokud
+  Bridge potřebuje číst chráněné cesty (`~/Library/Application Support`,
+  `~/Library/Mail`, atp.), použít přes Apple-poskytnuté **AppleEvents API**
+  (Notes, Contacts, Calendar, Reminders, Mail, OmniFocus) — Apple je
+  spravuje přes "Automation" permission, kterou launchd-spawned procesy
+  získat můžou.
+- **Direct sqlite read** na chráněné DB **funguje JEN když process má FDA**
+  — což je bezpečné jen pro Terminal.app + child procesy. Bridge přes launchd
+  ne.
+- Apple Bridge nyní udržuje OBA endpointy: `/contacts/all` (JXA, primární)
+  a `/contacts/all_sqlite` (legacy fallback s `no_fda` graceful degrade).
+- Detail v `docs/BUGS.md` poznámkách k BUG-008 a v `services/apple-bridge/main.py`
+  komentářích.
+
+---
+
+## 37. JXA per-property volání jsou drahé — `properties()` batch + omezený scope (2026-04-26)
+
+### Co se stalo
+První implementace JXA `/contacts/all` volala per-kontakt:
+```js
+const props = {
+    id: p.id(),
+    first: p.firstName(),
+    last: p.lastName(),
+    org: p.organization(),
+    emails: p.emails().map(e => ({label: e.label(), value: e.value()})),
+    phones: p.phones().map(p => ({label: p.label(), value: p.value()})),
+    modified_at: p.modificationDate()?.toISOString(),
+    groups: groupMap[p.id()] || [],
+};
+```
+
+Pro 1180 kontaktů × ~10 bridge calls = **11 800 JXA bridge volání** → run_jxa
+timeout 90s nestačil, request timeoutoval po **101 sekundách s žádnou odpovědí**.
+
+### Optimalizace
+1. **Skupiny získat jako mapping** mimo per-person loop — 1× `contacts.groups()`,
+   per skupina 1× `g.people().map(p => p.id())`. Max 19 calls (počet skupin).
+2. **Per-kontakt jen 4 calls**: `id`, `firstName`, `lastName`, `organization`.
+   Vynechat: emails, phones, modificationDate (drahé, méně potřebné — máme
+   z dřívějších sqlite ingestů v PostgreSQL).
+3. **try/catch per kontakt** — některé kontakty mohou mít poškozená data
+   (např. `firstName` throws na deleted person), nezpůsobit fail celého requestu.
+4. **timeout 240s** v `run_jxa(script, timeout=240)` — bezpečná rezerva.
+
+Výsledek: 1180 kontaktů za **~101s** (5–6 OK, 21 fail — ne JXA, ale neúplná
+data v Contacts.app pro některé kontakty). Pro náš účel (groups jako
+orthogonal signál) dost dobré.
+
+### Lekce
+- **JXA bridge calls jsou drahé** (~50/s typicky). Pro batch operations
+  (1000+ záznamů) plánovat per-property volání pečlivě. Lépe:
+  - 1× `collection.<property>()` (vrátí array hodnot pro všechny záznamy)
+  - JOIN přes index (i v JS poli)
+- Per-property `whose()` queries v JXA jsou pomalé — `flattenedTasks.whose({completed: false})`
+  pro 466 OF tasků je rozumné (1× call), ale pro 1180 kontaktů × 10 properties už
+  je to limit.
+- Některé Contacts.app kontakty mají poškozená/chybějící data → `try/catch`
+  per záznam je nutné, jinak fail celé operace.
+- Kontaktové **emails/phones lze získat samostatným endpointem** (`/contacts/full?id=X`)
+  pokud potřebné — refresh on-demand.
+- Detail v `services/apple-bridge/main.py:contacts_all()`.
+
+---
+
+## 38. Silent auto-spam = race condition past — vždy human-in-the-loop pro destruktivní akce (2026-04-27)
+
+### Incident
+2026-04-27 14:05:47 logy ukázaly:
+
+```
+[INFO] move_to_trash OK: dxpavel@icloud.com uid=46122 → Deleted Messages
+[INFO] SPAM (auto trash, 100%): Re: dane 2025
+[INFO] Klasifikováno: firma=PRIVATE typ=ÚKOL spam=false (100%)
+```
+
+Email od `krouzecka@volny.cz` (Pavlova účetní, kontakt v Apple Contacts.app, ale
+s emailem typu „Siri found in Mail" které JXA nevidí → `ingest_contacts` ho
+nezahrnul → `_is_contact()` whitelist nematchnul). Llama označila spam
+confidence 1.0 → silent move_to_trash. Vzápětí stejný email znovu klasifikován
+jako typ=ÚKOL spam=false, ale akce už proběhla (klasický race condition v
+`classify_emails.py`).
+
+### Root cause kandidáti (zatím nevyřešeno)
+- Souběh ingest IDLE push + scan job — stejný email zpracován dvakrát s různými
+  výstupy Llamy (deterministická Llama není 100%).
+- DB-level: nedostatečný `LOCK` / `FOR UPDATE SKIP LOCKED` při výběru `status='new'`
+- Apple Contacts whitelist neexponuje emaily typu „Siri found in Mail" → falešně
+  negativní `_is_contact()` pro Pavlovu účetní
+
+### Dočasný fix
+`classify_emails.SPAM_AUTO_THRESHOLD = 2.0` (= podmínka `confidence > 2.0` nikdy
+nesplněna → silent auto-trash neběží). Učení v Chromě (`store_email_action`,
+`find_repeat_action`) dál funguje, jen bez auto-execute.
+
+Pavel klikne 2spam / 2del ručně na TG.
+
+### Poučení
+- **Silent destruktivní akce = nepřípustné** dokud není 100% zajištěna idempotence
+  a deterministická klasifikace.
+- **Auto-apply z Chromy též vypnut** (commit 2837dae) — místo toho se vzor
+  zobrazí jako návrh (`⭐ Navrženo: 2X (NN%) ⭐`) a Pavel klikne.
+- **Pattern**: pro každou novou „auto" funkci se zeptat: „co se stane, když
+  klasifikace (Llama / Chroma / heuristika) je flipnutá v dalších 5s?"
+  Pokud odpověď zahrnuje „mail je v Trash", potřebujeme TG zprávu místo silent
+  execute.
+
+---
+
+## 39. `Auto-Submitted: auto-generated` ≠ bounce — RFC 3464 vs běžné notifikace (2026-04-27)
+
+### Incident
+MantisBT issue notifikace [HOSPODARY 0000255/0000256] od
+`servicedesk@dxpsolutions.cz` dostala TYP=ERROR. Důvod: pravidlo `header_bounce`
+v `decision_rules` matchovalo header `Auto-Submitted: auto-generated`, který má
+**každá** systémová notifikace (MantisBT, GitHub, monitoring), ne jen reálné
+DSN bounce reporty.
+
+### Standard
+RFC 3464 (Delivery Status Notifications) definuje:
+
+```
+Content-Type: multipart/report; report-type=delivery-status; boundary="..."
+```
+
+Toto má **POUZE** reálný bounce. `Auto-Submitted: auto-generated` má cokoliv
+co není odpověď člověka.
+
+### Fix
+`sql/013_decision_rules.sql` rule `header_bounce`:
+
+```sql
+-- před: condition matchovala Auto-Submitted contains 'auto-generated'
+-- po:   condition matchuje Content-Type contains 'multipart/report'
+```
+
+Plus DB UPDATE na PROD VM 103 (rule + dva falešně klasifikované emaily reset
+typ=NULL, status='new', human_reviewed=FALSE) — ty pak prošly znova přes
+opravený engine.
+
+### Poučení
+- **Header detekce v decision_rules vyžaduje znalost RFC** — `Auto-Submitted`
+  je široký, `multipart/report` je úzký a deterministický.
+- Po opravě: skutečné bounce DSN dostávají TYP=ERROR (≥95 % bounce trafficu),
+  MantisBT/GitHub/monitoring jdou na `ai_fallback` (Llama → typicky NOTIFIKACE).
+- CLAUDE.md sekce 12 (gotchas) přidán řádek s tímto rozdílem.
+
+---
+
+## Lekce 38 — JSONB containment (`@>`) je case-sensitive (BUG-011)
+
+**Datum:** 2026-04-27, fix commit `af5df96`
+
+### Co se stalo
+Po fixu BUG-009 (group rules dataset) se znovu spustila verifikace decision
+engine na 4 personal kontaktech. Roman Hruby (`roman.hruby@schmachtl.cz`,
+MEDVEDI 🧸) matchnul. Honzik Košťál (`Koscusko@seznam.cz` v DB) **nematchnul**
+i přesto, že sender_personal rule MÁ FOCENI 📸 v podmínce.
+
+### Příčina
+PostgreSQL JSONB `@>` (containment) je **case-sensitive**. Query
+`emails @> '[{"value":"koscusko@seznam.cz"}]'::jsonb` vůči DB hodnotě
+`{"value":"Koscusko@seznam.cz"}` vrátí FALSE. Apple Contacts ukládá email
+přesně tak, jak ho uživatel napsal.
+
+### Fix
+Místo `@>` použít `EXISTS` + `jsonb_array_elements` + oboustranné `LOWER()`:
+
+```sql
+-- Před (case-sensitive, FAIL):
+WHERE emails @> %s::jsonb
+-- Po (case-insensitive, OK):
+WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(emails) AS e
+              WHERE LOWER(e->>'value') = LOWER(%s))
+```
+
+### Poučení
+- **JSONB `@>` operátor nepoužívat na string fieldy s casing inkonzistencí**
+  (uživatelské vstupy, různé importy, externí systémy).
+- Pro array-of-object vždy `EXISTS (jsonb_array_elements(...))` — explicit,
+  snadno přidat normalizaci (LOWER, TRIM, regexp).
+- Po každém **bulk re-ingestu z external source** spustit smoke test na 5–10
+  reálných odesílatelích z různých skupin (ne jen 1).
+
+---
+
+## Lekce 39 — OmniFocus task.id() persistence pro threading (H2)
+
+**Datum:** 2026-04-27, commit `e37f576`
+
+### Architektonický problém
+Thread continuation flow vyžaduje znát `of_task_id` pro každý email který
+předtím vyvolal akci `2of`. Bez task_id v DB → reply na thread → notify_emails
+posílá normální TG s `[2of]` → Pavel klikne → vznikne **duplicitní OF task**.
+
+### Diagnóza
+Apple Bridge `/omnifocus/add_task` **NEVRACEL** `task.id()` — JXA response
+obsahoval jen `{ok, name}`. Schema `email_messages.of_task_id` přitom
+existoval (sql/014) — sloupec byl měsíc mrtvý.
+
+### Fix (3 vrstvy)
+1. **Bridge JXA:** `JSON.stringify({ok, name, task_id: task.id()})`
+2. **Callback:** zaveden `_bridge_call_full()` → vrací `(ok, json|None)`.
+   Existující `_bridge_call()` zachován jako thin wrapper pro 4 ostatní
+   callery (rem/note/cal) — backward compat bez refactoru.
+3. **Action handler `of`:** po úspěchu `UPDATE email_messages SET
+   of_task_id=%s, of_linked_at=NOW()`. Když Bridge vrátí None (pending
+   queue offline mode), neselhat — log.warning a pokračovat bez linkování.
+
+### Detection logic v notify_emails
+```sql
+LEFT JOIN LATERAL (
+    SELECT em2.of_task_id, em2.subject AS prev_subject
+    FROM email_messages em2
+    WHERE em2.thread_id = em.thread_id
+      AND em2.of_task_id IS NOT NULL
+      AND em2.id <> em.id
+    ORDER BY em2.sent_at ASC LIMIT 1
+) thr ON em.thread_id IS NOT NULL
+```
+ORDER BY ASC → vrací **původní** task (nejstarší v threadu), ne poslední append.
+
+### Poučení
+- **Schema sloupec bez funkčního zdroje dat = mrtvý sloupec.** Při PR
+  reviewu kontrolovat: kdo data zapíše? Pokud nikdo, sloupec smazat
+  nebo přidat na backlog.
+- **Backward-compat při změně bridge call signature:** thin wrapper
+  > refactor všech callerů. Riziko regrese minimální.
+- **Pending queue degraded mode:** bridge call → enqueue (offline) vrací
+  `True` ale `task_id=None`. Persist handler musí umět tenhle stav
+  (log.warning, task_status='→OF' bez of_task_id). Pending_worker později
+  proběhne, ale **task_id zpětně nedoplní** (TODO budoucí session).
+
+---
+
+## 40. Python long-running proces v Dockeru — `docker cp` ≠ reload (2026-05-04)
+
+### Incident
+Pavel hlásí že některé TG zprávy po klasifikaci ukazují **starou** sadu tlačítek (per-TYP layout: OF/REM/NOTE • Hotovo/Přečteno/Čeká • Spam/Skip), zatímco jiné mají **novou** univerzální 3×3 sadu vč. suggestion buttonu (commit `61bd3e0` + `2837dae` + H2/H3 buttons z `e37f576`/`394ec5e`).
+
+### Diagnóza
+- `md5sum` souboru `notify_emails.py` v kontejneru `brogiasist-scheduler` se **shodoval** s lokálem (= soubor je aktuální).
+- `docker inspect` ukázal `StartedAt = 2026-04-27 19:30` — kontejner běží 6 dní.
+- Mezi tím proběhly 4 commity měnící `notify_emails.py` (`2837dae`, `e37f576`, `394ec5e`, …).
+
+Někdo (nebo Synology sync přes bind / manuální `docker cp`) **přepsal soubor na disku**, ale Python proces si při startu naimportoval moduly **do paměti**. Změny `.py` na disku po startu nemají efekt dokud se proces nerestartuje.
+
+### Sekundární příčina (paralelní bot)
+V logu PROD scheduleru: `Telegram getUpdates: 409 Conflict`. Na Pavlově MacBooku běžel `brogi-scheduler` (DEV) ~2 hodiny a konzumoval TG callbacky paralelně se starým kódem. To vysvětluje proč některé zprávy měly starý layout (DEV vyhrál race s PROD na konkrétní `getUpdates`).
+
+### Fix
+1. Na PROD VM 103: `cd ~/brogiasist && docker compose up -d --build scheduler` (full rebuild, ne jen restart — eliminuje drift všech `.py` souborů, ne jen jednoho).
+2. Na DEV MacBooku: `docker stop brogi-scheduler` (DEV DB/Chroma/dashboard běží dál).
+3. Verifikace: posledních 5 `getUpdates` → `200 OK` (žádný 409).
+
+### Poučení
+- **`docker cp` na long-running Python proces je nedostatečný.** Vždy restart kontejneru po podstatné změně modulu importovaného při startu (callback handlery, scheduler joby, klasifikační logika).
+- **Preferuj `docker compose up -d --build <service>`** před `docker cp + docker restart`. Eliminuje:
+  - drift mezi soubory (jeden soubor zkopírován, druhý zapomenut),
+  - mismatch image vs runtime,
+  - debug nightmare „proč Python má jiný kód než disk".
+- **TG bot 409 Conflict je signál paralelní instance.** Před spuštěním DEV scheduleru vždy ověř že PROD je dolu (nebo opačně). Telegram nedoručuje callback oběma — stochastic split.
+- **TODO:** Lekce #69 (existující v `Co ještě nebylo řešeno`) navrhovala bind mount pro `services/ingest:/app`. Pokud by byl, problém by zůstal stejný (process restart pořád potřeba), ale aspoň by se eliminoval ruční `docker cp`.
+
+---
+
+## 41. Diagnostika „kontejner běží starý kód" — md5 soubor není dostatečný signál (2026-05-04)
+
+### Pattern
+Při hypotéze „kontejner má starý kód" první instinkt je `md5sum souboru`. **Falešně negativní signál**: shoda md5 ≠ shoda běžícího kódu.
+
+### Správný diag flow
+
+```bash
+# 1. Hash souboru v kontejneru vs lokálu (rychlý first-pass)
+docker exec <container> md5sum /app/<modul>.py
+md5sum services/ingest/<modul>.py
+
+# 2. Container start time vs commit history (ROZHODUJÍCÍ pro Python long-running)
+docker inspect <container> --format '{{.State.StartedAt}}'
+git log --since="<StartedAt>" --oneline -- services/ingest/<modul>.py
+
+# Pokud v intervalu PROBĚHL commit a kontejner se NErestartoval → kód v paměti je starý.
+
+# 3. Image age vs build context
+docker inspect <container> --format '{{.Config.Image}}'
+docker images <image> --format '{{.CreatedAt}}'
+```
+
+### Poučení
+- Pro Python (a jakýkoli interpretovaný jazyk s import-time side effects) je **rozhodující signál `StartedAt` vs `git log --since`**, ne md5.
+- Kompilované jazyky (Go, Rust): jiný flow — image rebuild = nový binár, restart povinný.
+- **Pravidlo palce:** „kontejner běží > 24h + commit do souboru < 24h = podezření na drift v paměti." Restart, neuvažuj.
+
+---
+
+## 42. Llama klasifikátor vrací doslovně placeholder strings — vždy validovat enum (2026-05-04)
+
+### Incident
+DB query `SELECT typ, task_status, COUNT(*) FROM email_messages` ukázal:
+- 17 emailů s `task_status='<ČEKÁ-NA-MĚ|ČEKÁ-NA-ODPOVĚĎ|null>'` (raw template echo)
+- 3 emaily s `typ='<ÚKOL|DOKLAD|NABÍDKA|NOTIFIKACE|POZVÁNKA|INFO>'`
+
+Llama 3.2-vision občas vrátí raw placeholder string místo skutečné hodnoty, zvlášť když body emailu je krátký nebo nejasný. Parser `result.get("task_status")` to akceptoval bez validace → uloženo do DB.
+
+### Fix (`classify_emails.py`)
+```python
+_VALID_TYP = {"ÚKOL", "DOKLAD", "NABÍDKA", "NOTIFIKACE", "POZVÁNKA", "INFO"}
+_VALID_TASK_STATUS = {"ČEKÁ-NA-ODPOVĚĎ", "HOTOVO", "→OF", "→REM", "→CAL"}
+
+raw_typ = result.get("typ", "INFO")
+typ = raw_typ if raw_typ in _VALID_TYP else "INFO"  # fallback
+
+raw_status = result.get("task_status")
+if raw_status in (None, "null", "", "<ČEKÁ-NA-ODPOVĚĎ|null>"):
+    task_status = None
+elif raw_status in _VALID_TASK_STATUS:
+    task_status = raw_status
+else:
+    task_status = None  # placeholder / invalid → null
+```
+
+### Plus business rule (Pavlovo rozhodnutí)
+- `task_status='ČEKÁ-NA-MĚ'` se NIKDY nezapisuje. TYP=ÚKOL už sám říká „čeká na mě", `ČEKÁ-NA-MĚ` je redundantní pro ÚKOL a nesmyslné pro ostatní TYPy.
+- `task_status='ČEKÁ-NA-ODPOVĚĎ'` u TYP ∈ {INFO, NEWSLETTER, NOTIFIKACE} → null (newsletter neodpovídá).
+
+### Backfill (jednorázově)
+```sql
+UPDATE email_messages SET task_status=NULL WHERE task_status='ČEKÁ-NA-MĚ';                    -- 46
+UPDATE email_messages SET task_status=NULL WHERE task_status LIKE '<%|%>';                    -- 14
+UPDATE email_messages SET typ=NULL WHERE typ LIKE '<%|%>';                                    -- 4
+UPDATE email_messages SET task_status=NULL
+   WHERE task_status='ČEKÁ-NA-ODPOVĚĎ' AND typ IN ('INFO','NEWSLETTER','NOTIFIKACE');         -- 14
+```
+
+### Poučení
+- **LLM JSON output ≠ trustworthy enum.** Vždy validuj proti whitelistu. Llama 3.2 i Claude občas haluje na okrajích.
+- **Pattern**: pro každý enum sloupec v DB udržuj `_VALID_*` set v kódu, s `if not in set: log.warning + fallback`.
+- Smysl `decision_engine` je rozhodovat PŘED Llamou (header check, group rules) — invalid Llama output by se neměl propsat do DB v žádném scenáři.
+
+---
+
+## 43. Univerzální 3×3 Telegram layout vyžaduje always-show buttons + graceful no-op (2026-05-04)
+
+### Incident
+Pavlův screenshot ukázal že INFO email od `lukas.lahoda@louda.cz` měl 8 tlačítek (3+2+3 layout — chyběl třetí button v middle row), zatímco NABÍDKA od Coursera měla 9 (3+3+3). Inkonzistence v UI.
+
+### Příčina (`notify_emails.py`)
+```python
+row2 = [_btn("📅 2cal"), _btn("📝 2note")]
+if has_unsubscribe:
+    row2.append(_btn("🚫 2unsub"))  # jen pokud email má List-Unsubscribe header
+```
+
+Personal/business emaily nemají List-Unsubscribe header → `2unsub` chyběl → 8 buttons → asymetrický layout.
+
+### Fix
+1. **`notify_emails.py`**: `2unsub` zobrazit VŽDY (univerzální 3×3 = 9 buttons konzistentně).
+2. **`telegram_callback.py` (action=unsub handler)**: graceful no-op — pokud `unsubscribe_url IS NULL`, vrátit TG zprávu „Email nemá List-Unsubscribe header. Pokud je to spam, použij 2spam." a žádná destruktivní akce.
+
+### Poučení
+- **„Univerzální layout" znamená univerzální v každé zprávě**, ne podmíněně podle datových polí. Layout konzistence > UX optimalizace per email.
+- **Graceful no-op pattern pro destruktivní akce**: když handler nemá data pro plnou akci, vrať informativní zprávu místo nedostupnosti tlačítka. Uživatel se naučí semantiku rychleji než z chybějícího UI.
+- Identický pattern by se měl aplikovat na další buttons které jsou občas relevantní (např. `2cal` pro POZVÁNKA — pokud email nemá .ics, handler graceful no-op místo skrytí).
+
+---
+
+## 44. IMAP `SEARCH` může vrátit `data=[None]` — guard before `.split()` (2026-05-04)
+
+### Incident
+[services/ingest/ingest_email.py:192](services/ingest/ingest_email.py:192) měl `uids = data[0].split()` bez guardu. iCloud IMAP občas vrací `data=[None]` — `None.split()` → AttributeError. PROD log byl zaspaměn: každých 30s `[ERROR] [dxpavel@icloud.com] 'NoneType' object has no attribute 'split' — reconnect za 30s`. IDLE listener pro iCloud v cyklickém crash → reconnect → crash.
+
+Důsledek: iCloud bez real-time IDLE, jen 30min scan fallback (= dovoluje 30 min latenci pro nové iCloud emaily).
+
+### Fix
+```python
+# Před (crash když data[0] is None):
+uids = data[0].split()
+
+# Po (graceful — prázdný výsledek = žádné UIDy):
+uids = (data[0] or b"").split() if data else []
+```
+
+Plus pojistka řádek dál:
+```python
+to_raw = decode_header_value(msg.get("To", "")) or ""
+```
+
+### Proč právě iCloud
+Apple iCloud IMAP server má **liberálnější interpretaci RFC 3501** — při dočasných glitchích nebo prázdných folderech vrací `OK` ale `data=[None]` místo `data=[b'']`. Ostatní servery (Gmail, Seznam, dxpsolutions, dxpavel.cz) vrací konzistentní `data=[b'']`.
+
+### Poučení
+- **IMAP response API není type-safe.** `data[0]` může být `bytes`, `None`, nebo neexistující prvek. Vždy ošetřit.
+- **Globální anti-pattern check:** `grep -rn "data\[0\]\.split" services/` — všech 5 výskytů zkontrolovat. 4 backfill skripty mají guard `if typ == "OK" and data[0]` (OK), 1 hlavní `fetch_messages` byl bez guardu (FIX).
+- **Pravidlo palce pro IMAP code:** každý `data[0]` přístup → `(data[0] or b"")`. Stojí to nic, brání crash při server kvirikách.
+- BUGS.md → **BUG-012** (FIXED 2026-05-04).
+
+---
+
+## 45. Llama numeric output sanitize — placeholder strings v float fields (2026-05-04, BUG-013)
+
+**Problém:** Po týdnech bezproblémového běhu se objevila výjimka:
+`[ERROR] classify <id>: could not convert string to float: '<0.0-1.0>'`
+Postihl 1 email ze ~50, klasifikace selhala (status zůstal 'new', žádná TG notif).
+
+**Příčina:** Llama 3.2 občas (≈1×/den) **echo-uje doslova** placeholder
+z prompt template místo aby dal hodnotu. Existující sanitize logika v
+`classify_emails.py` řešila `typ` (whitelist `_VALID_TYP`) a `task_status`
+(whitelist `_VALID_TASK_STATUS`), ale **`confidence` chybělo**.
+Stejný anti-pattern jako lekce #42, jen pro číselný field.
+
+**Fix (commit `b8e88a9`):**
+```python
+raw_confidence = result.get("confidence", 0.5)
+try:
+    confidence = float(raw_confidence)
+    if not (0.0 <= confidence <= 1.0):
+        raise ValueError(f"out of range: {confidence}")
+except (TypeError, ValueError) as e:
+    log.warning(f"Llama vrátila invalid confidence={raw_confidence!r}, fallback 0.5: {e}")
+    confidence = 0.5
+```
+
+**Pravidlo:** Všechna **numerická pole** z LLM API vyžadují
+`try/except float()` + range check + fallback default. Stejně jako enum
+pole vyžadují whitelist (lekce #42), numerická pole vyžadují range guard.
+
+---
+
+## 46. IMAP MOVE mění UID v cílové složce — mark_read po move selže (2026-05-04, BUG-014)
+
+**Problém:** PROD log spamoval každou `2del`/`2spam` akci na Gmail/Synology:
+```
+[INFO] move_to_trash OK: dxpavel@gmail.com uid=114152 → [Gmail]/Trash
+[ERROR] mark_read dxpavel@gmail.com uid=114152: command STORE illegal in state AUTH
+```
+Funkčně OK (`_update_db_folder` už nastavil is_read=TRUE), ale ERROR v logu
+zatemňoval skutečné errory.
+
+**Příčina:** Po IMAP MOVE má email v cílové složce **jiný UID**
+(UIDVALIDITY se mění mezi folders v Gmail/Cyrus IMAP). `_mark_read_after_action`
+pak volá `mark_read(email_id)` který načte z DB `(mailbox, uid=114152, folder=[Gmail]/Trash)`
+— **uid 114152 v Trashi neexistuje**, jen v INBOXu kde už není. Plus
+`m.select()` návrat se nekontroloval — pokud SELECT selže, spojení zůstane
+ve stavu AUTH a STORE pak vyhodí "illegal in state AUTH".
+
+**Fix (commit `e5df8a7`, dvouvrstvý):**
+- **A)** `action_done()`: skip `mark_read` pokud folder obsahuje
+  trash/deleted/spam/junk (root cause — práce už hotová z `_update_db_folder`)
+- **B)** `mark_read()`: check návratu `m.select()` = "OK" před STORE
+  (defensive pro budoucí případy)
+
+**Pravidlo:** Po IMAP MOVE **nepředpokládej UID kontinuity** v cílové
+složce. Vždy kontroluj návrat `m.select()` před STORE/FETCH operacemi.
+
+---
+
+## 47. Implementuj reverze PŘED implementací akce — Bridge endpoint audit (2026-05-04, M2)
+
+**Problém:** M2 (2undo TTL 1h) jsem nejprve implementoval s reverzemi pro
+všech 8 reverzibilních akcí (`hotovo/precteno/ceka/spam/del/of/rem/cal`).
+Až po napsání kódu jsem zkontroloval Apple Bridge endpointy — a zjistil:
+`/omnifocus/task/{id}/delete`, `/reminders/{id}/delete`, `/calendar/{id}/delete`
+**neexistovaly**. Pavel by tedy klikl "↶ Vrátit" → Bridge 404 → DB by se
+resetovala, ale OF task / REM / CAL záznam by zůstal jako orphan.
+
+**Příčina:** Předpokládal jsem že Bridge má symetrické CRUD operace bez
+ověření. Bridge měl `add_task` / `add_reminder` / `add_event` ale žádné
+`delete_*`.
+
+**Fix (commit `d19ca0d`):** Přidány 3 nové DELETE endpointy v Bridge
++ `/reminders/add` a `/calendar/add` rozšířeny o `id` v response.
+Scheduler zachytí ID a uloží do `email_messages.{rem,cal}_event_id`.
+
+**Pravidlo:** Před implementací **reverze / undo / cleanup logiky** pro
+feature X **nejprve audituj všechny závislé endpointy/funkce** že existují.
+Pokud ne → buď je doplň ve stejné session, nebo redukuj scope MVP.
+Hotový kód co volá neexistující endpoint = orphan / data inconsistency.
+
+---
+
+## 48. AI cascade design — spec před implementací zachrání čas (2026-05-04, M5)
+
+**Problém:** Pavel chtěl rozšířit decision_rules o subject/body keyword
+matching. V průběhu debaty se to vyvinulo na "Claude verifikuje TYP +
+topics + suggested_action + ✓ Potvrdit button" = 6-vrstvý cascade s
+~6h implementací. Pokušení nacpat to vše do jedné session bylo silné.
+
+**Místo toho:** Vytvořeno **422-řádkový spec** `docs/feature-specs/FEATURE-AI-CASCADE-v1.md`
+s rozdělením do 2 sessions (Llama + Claude), všechna rozhodnutí (threshold,
+prompt, storage, UI flow, učení dual-track) zaznamenána před implementací.
+Subject/body keyword (z Llama session) **předtaženo** do aktuální session
+jako M5-pre, ostatní odloženo.
+
+**Pravidlo:** Pro multi-vrstvé features (cascading AI, layered decision)
+vyrob **spec dokument PŘED kódováním**:
+- architektura + diagram
+- JSON schema/return contracts
+- storage decisions
+- UI flow
+- rozhodovací matrix (thresholds, fallbacks)
+- rizika + mitigace
+- implementační kroky per session (s odhady)
+
+Spec je levný (1h), záchrana před chaotickým kódem (3h zpětně) je velká.
 
 ---
 

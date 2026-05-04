@@ -26,6 +26,10 @@ __pycache__/
 node_modules/
 .vscode/
 .idea/
+.claude/
+
+# One-off DEV scripts (mohou obsahovat hesla)
+scripts/_apply_*.py
 
 # Credentials (legacy, viz BrogiSERVER docs)
 docs/brogimat-assistance-credentials-v1.md

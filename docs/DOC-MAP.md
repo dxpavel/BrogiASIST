@@ -1,8 +1,8 @@
 ---
 Název: DOC-MAP
 Soubor: docs/DOC-MAP.md
-Verze: 4.5 (release 1.1)
-Poslední aktualizace: 2026-04-26
+Verze: 5.0 (TG buttons + task_status + iCloud BUG-012 fix 2026-05-04)
+Poslední aktualizace: 2026-05-04
 Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, neexistuje.
 ---
 
@@ -14,12 +14,14 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 
 | Soubor | Popis | Stav |
 |---|---|---|
-| `CONTEXT-NEW-CHAT.md` | Aktuální stav, cesty, co běží, co chybí | ✅ 2026-04-25 |
-| `brogiasist-architecture-v1.md` | Stack, services, endpointy, DB schéma, dataflow, IMAP akce | ✅ 2026-04-25 |
-| `brogiasist-data-dictionary-v1.md` | Datový model, DB tabulky, procesní tok, AI vrstvy | ✅ 2026-04-25 |
-| `brogiasist-lessons-learned-v1.md` | Poučení z praxe — IMAP, JXA, Docker, action logging | ✅ 2026-04-25 |
+| `CONTEXT-NEW-CHAT.md` | Aktuální stav, cesty, co běží, co chybí — **branch `2` = v2 in progress** | ✅ 2026-04-26 |
+| `SESSION-HANDOFF-D-CONTINUATION.md` | **PRIORITNÍ** handoff pro pokračování blockeru D — HIGH/MEDIUM/LOW priority + první krok | ✅ 2026-04-26 |
+| `brogiasist-architecture-v1.md` | Stack, services, endpointy, DB schéma, dataflow, IMAP akce — **vč. v2 komponent (decision_engine, pending_worker) + 2026-04-27 (univerzální 3×3 layout, 2del, predikce-jako-návrh, auto-spam vypnut)** | ✅ 2026-04-27 |
+| `brogiasist-data-dictionary-v1.md` | Datový model, DB tabulky, procesní tok, AI vrstvy — **vč. decision_rules + pending_actions + 9. ACTION 2del + endpoint POST /emails/suggested** | ✅ 2026-04-27 |
+| `brogiasist-lessons-learned-v1.md` | Poučení z praxe — IMAP, JXA, Docker, action logging, **+ 38/39** (auto-spam, header_bounce), **+ 40/41** (drift fix), **+ 42** (Llama placeholder strings → enum sanitize), **+ 43** (univerzální 3×3 always-show + graceful no-op), **+ 44** (IMAP SEARCH `data=[None]` guard) | ✅ 2026-05-04 |
 | `brogiasist-infrastructure-v1.md` | Stroje, porty, sítě, Docker, Apple Bridge — **DEV vs PROD** | ✅ 2026-04-26 |
-| `BUGS.md` | Známé bugy a tech debt — co opravit, kde, proč. **Aktuálně:** BUG-001/004/005/006 OPEN, BUG-002/003 FIXED v 1.1 | ✅ 2026-04-26 |
+| `brogiasist-semantics-v1.md` | **Email TYP/STATUS/ACTION semantika** — kanonická spec + sekce 21 (implementation status na branch `2`) | ✅ 2026-04-26 v1.2 |
+| `BUGS.md` | Známé bugy a tech debt — **BUG-001/004/005/006/009/010 OPEN**, BUG-002/003 FIXED v 1.1, **BUG-007/008 FIXED 2026-04-26**, **BUG-011 FIXED 2026-04-27**, **BUG-012 FIXED 2026-05-04** (iCloud IMAP `data[0]=None` guard) | ✅ 2026-05-04 |
 
 ---
 
@@ -27,9 +29,8 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 
 | Soubor | Popis | Stav |
 |---|---|---|
-| `brogiasist-api-reference-v1.md` | Webhook server endpointy, příklady | ✅ 2026-04-06 |
+| `brogiasist-api-reference-v1.md` | Webhook server + Apple Bridge endpointy (vč. nových `/of/task/{id}/append_note`, `/notes/{id}/append`, JXA `/contacts/all`) | ✅ 2026-04-26 |
 | `brogiasist-credentials-v1.md` | Přístupy, API klíče, hesla (nečíst zbytečně) | ✅ 2026-04-22 |
-| `brogiasist-semantics-v1.md` | Email TYP/STATUS/ACTION semantika, decision flow, grafická spec, Mermaid diagram | ✅ 2026-04-26 v1.1 |
 | `brogiasist-workflows-v1.md` | Automatizace, rutiny | ⏳ neaktuální |
 | `brogiasist-feature-plan-v1.md` | Původní plán 9 modulů | ⏳ archiv (historický) |
 
@@ -41,8 +42,9 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 |---|---|
 | `CONTEXT-NEW-CHAT.md` | Stav projektu — aktualizovat na konci session |
 | `SESSION-HANDOFF-BRANCH1.md` | Handoff pro branch `1` — implementace base64 příloh (DEV) — **DONE 1.1** |
-| `SESSION-HANDOFF-PROD.md` | Handoff pro PROD migraci session — startup prompt + co zvážit + co nedělat |
-| `PROD-MIGRATION-HANDOFF.md` | Detailní postup migrace — 7 fází (BrogiServer + PajaAppleStudio), autoritativní reference |
+| `SESSION-HANDOFF-PROD.md` | Handoff pro PROD migraci session — startup prompt + co zvážit + co nedělat — **DONE 2026-04-26 (PROD na VM 103)** |
+| `PROD-MIGRATION-HANDOFF.md` | Detailní postup migrace — 7 fází (BrogiServer + PajaAppleStudio), autoritativní reference — **DONE** |
+| `SESSION-HANDOFF-D-CONTINUATION.md` | **AKTIVNÍ** handoff — pokračování blockeru D na branch `2` (BUG-009/010, threading TG flow, action wiring, calendar reply) + **UPDATE 2026-05-04** (drift fix: PROD scheduler rebuild + DEV stop) |
 
 ---
 
@@ -54,16 +56,27 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 
 ---
 
+## Feature specs (zadání pro Code session)
+
+| Soubor | Popis | Stav |
+|---|---|---|
+| `feature-specs/FEATURE-EMAIL-MAIL-LINK-v1.md` | Email link → Apple Mail.app na index dashboardu (ikona 📧, sloupec `mail_indexed`, sql/012) | ✅ READY-FOR-CODE → IMPLEMENTED commit 5324b74 |
+| `feature-specs/FEATURE-AI-CASCADE-v1.md` | 3-vrstvý AI cascade (rules → Llama → Claude) — spec pro session 2 (Llama threshold) + session 3 (Claude verify + topics + suggested_action + ✓ Potvrdit) | 📋 SPEC-READY (M5-pre předtažen do 2026-05-04 session, commit bc22501) |
+
+---
+
 ## Soubory mimo docs/
 
 | Cesta | Popis |
 |---|---|
-| `services/dashboard/` | FastAPI dashboard + Jinja2 templates |
-| `services/ingest/` | Scheduler, IMAP, Telegram, klasifikace |
-| `services/apple-bridge/` | FastAPI bridge pro Apple API (host, port 9100) |
-| `sql/` | SQL migrace 001–011 (kompletní, všechny soubory existují) |
-| `.env` | Environment proměnné |
-| `~/Library/LaunchAgents/cz.brogiasist.apple-bridge.plist` | Autostart Apple Bridge |
+| `CLAUDE.md` (root) | **Autoritativní projektová pravda** — 16 sekcí (PROD infra VM 103, ENV, deploy, gotchas, TYP/STATUS/ACTION sumár, BUG indexy, commit style). Načítá Claude Code automaticky při startu session. Vyhrává nad memory. (2026-04-26, 2026-04-27 patch, **2026-05-04 v1.2** — sekce 12 gotchas: docker cp/Python + TG 409) |
+| `services/dashboard/` | FastAPI dashboard + Jinja2 templates (v2: kostičky `.typ-box` + grafická semantika sekce 19) + predikce z Chromy v `/úkoly` (2026-04-27) |
+| `services/ingest/` | Scheduler, IMAP, Telegram, klasifikace + **decision_engine.py (v2)** + **pending_worker.py (v2)** + **chroma_audit.py / chroma_dedup.py (2026-04-27)** |
+| `services/apple-bridge/` | FastAPI bridge pro Apple API (host, port 9100) — **BUG-008 fix `os.posix_spawn()`** + nové endpointy `/of/task/{id}/...`, `/notes/{id}/...`, JXA `/contacts/all` |
+| `sql/` | SQL migrace 001–014: 012_apple_contacts_groups.sql, 013_decision_rules.sql, 014_email_semantics_v1.sql (vše v branch `2`) |
+| `.env` | Environment proměnné (`OLLAMA_URL`, `APPLE_BRIDGE_URL`, IMAP credentials, ...) |
+| `~/Library/LaunchAgents/cz.brogiasist.apple-bridge.plist` | Autostart Apple Bridge — Apple Studio (10.55.2.117) |
+| **PROD VM 103 deploy** | `ssh pavel@10.55.2.231` → `cd ~/brogiasist` → `git pull origin 2` → `docker compose build/up` |
 
 ---
 

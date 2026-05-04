@@ -189,7 +189,9 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
     m = connect(account)
     m.select("INBOX", readonly=True)
     _, data = m.uid('SEARCH', None, f'SINCE {since_str}')  # UID-based search → skutečná UID
-    uids = data[0].split()
+    # 2026-05-04: iCloud občas vrátí data=[None] při dočasných glitchích nebo
+    # prázdném výsledku. `None.split()` → AttributeError. Ošetříme.
+    uids = (data[0] or b"").split() if data else []
     messages = []
     fetch_cmd = "(BODY[])" if account.get("fetch_cmd") == "BODY[]" else "(RFC822)"
     for uid in uids:
@@ -203,7 +205,7 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
             message_id = msg.get("Message-ID", f"uid-{uid.decode()}-{account['name']}").strip()
             subject = decode_header_value(msg.get("Subject", ""))
             from_addr = decode_header_value(msg.get("From", ""))
-            to_raw = decode_header_value(msg.get("To", ""))
+            to_raw = decode_header_value(msg.get("To", "")) or ""
             to_addrs = [a.strip() for a in to_raw.split(",") if a.strip()]
 
             sent_at = None
@@ -222,6 +224,39 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
             body_text = _extract_body(msg)
             unsubscribe_url = _find_unsubscribe(msg, body_text)
 
+            # RFC 5322 / 2369 hlavičky pro decision_rules + threading + spam detection
+            # str() konverze ošetří email.header.Header objekt (multi-line, encoded)
+            def _hdr(name: str):
+                v = msg.get(name)
+                return str(v) if v is not None else None
+
+            headers = {
+                # threading (RFC 5322 §3.6.4)
+                "Message-ID":       _hdr("Message-ID"),
+                "In-Reply-To":      _hdr("In-Reply-To"),
+                "References":       _hdr("References"),
+                # mailing list (RFC 2369)
+                "List-Id":          _hdr("List-Id"),
+                "List-Unsubscribe": _hdr("List-Unsubscribe"),
+                "List-Post":        _hdr("List-Post"),
+                # auto-replies / bounces (RFC 3834 / RFC 3464)
+                "Auto-Submitted":   _hdr("Auto-Submitted"),
+                # encrypted detection (S/MIME, PGP)
+                "Content-Type":     _hdr("Content-Type"),
+                # akčnost (TO vs CC vs BCC)
+                "Cc":               _hdr("Cc"),
+                "Bcc":              _hdr("Bcc"),
+                # spam detection / bounce
+                "Reply-To":         _hdr("Reply-To"),
+                "Return-Path":      _hdr("Return-Path"),
+                "X-Mailer":         _hdr("X-Mailer"),
+            }
+
+            # Pro threading (blocker D1): extrahovat z headers do top-level
+            in_reply_to = headers.get("In-Reply-To") or None
+            if in_reply_to:
+                in_reply_to = in_reply_to.strip().strip("<>").strip()
+
             messages.append({
                 "source_id": message_id,
                 "mailbox": account["name"],
@@ -234,6 +269,8 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
                 "body_text": body_text,
                 "unsubscribe_url": unsubscribe_url,
                 "attachments": attachments,
+                "rfc_message_id": message_id.strip().strip("<>").strip() if message_id else None,
+                "in_reply_to": in_reply_to,
                 "raw_payload": {
                     "message_id": message_id,
                     "subject": subject,
@@ -241,6 +278,7 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
                     "to": to_addrs,
                     "date": date_str,
                     "has_attachments": has_attachments,
+                    "headers": headers,
                 },
             })
         except Exception as e:
@@ -259,11 +297,13 @@ def upsert_messages(messages: list) -> tuple[int, int]:
             INSERT INTO email_messages
                 (source_type, source_id, raw_payload, mailbox, from_address,
                  to_addresses, subject, sent_at, has_attachments, imap_uid,
-                 body_text, unsubscribe_url)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 body_text, unsubscribe_url, message_id, in_reply_to)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (source_id) DO UPDATE SET
                 body_text = COALESCE(EXCLUDED.body_text, email_messages.body_text),
-                unsubscribe_url = COALESCE(EXCLUDED.unsubscribe_url, email_messages.unsubscribe_url)
+                unsubscribe_url = COALESCE(EXCLUDED.unsubscribe_url, email_messages.unsubscribe_url),
+                message_id = COALESCE(EXCLUDED.message_id, email_messages.message_id),
+                in_reply_to = COALESCE(EXCLUDED.in_reply_to, email_messages.in_reply_to)
             RETURNING id, (xmax = 0) AS is_new, is_spam
         """, (
             "email",
@@ -278,9 +318,28 @@ def upsert_messages(messages: list) -> tuple[int, int]:
             msg["imap_uid"],
             msg.get("body_text"),
             msg.get("unsubscribe_url"),
+            msg.get("rfc_message_id"),
+            msg.get("in_reply_to"),
         ))
         row = cur.fetchone()
         email_uuid, is_new, is_spam_db = row[0], row[1], row[2]
+
+        # Threading: pokud je nový, dohledat thread_id z parent (in_reply_to → message_id)
+        # Pokud parent nenajdeme, thread_id = vlastní id (root threadu).
+        if is_new:
+            parent_id = None
+            if msg.get("in_reply_to"):
+                cur.execute(
+                    "SELECT id, thread_id FROM email_messages WHERE message_id = %s LIMIT 1",
+                    (msg["in_reply_to"],)
+                )
+                parent_row = cur.fetchone()
+                if parent_row:
+                    parent_id = parent_row[1] or parent_row[0]  # parent.thread_id nebo parent.id
+            cur.execute(
+                "UPDATE email_messages SET thread_id = %s WHERE id = %s",
+                (parent_id or email_uuid, email_uuid)
+            )
         if is_new:
             new_count += 1
         else:

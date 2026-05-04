@@ -16,7 +16,7 @@ Pravidlo: nový bug = nový záznam s ID `BUG-NNN`. Vyřešený bug = označit `
 
 **Severita:** medium (čistý code, žádný funkční dopad)
 **Zjištěno:** 2026-04-26 (větev 1, base64 přílohy session)
-**Status:** OPEN — refaktor odložen na samostatnou session
+**Status:** **FIXED 2026-05-04 commit `3507591`** — vytvořen `services/ingest/email_actions.py` (834 ř.) se sdíleným kódem. `telegram_callback.py` zredukován z 909 → 110 ř. (-88 %), zůstal jen TG-specific (offset persist + polling loop + dispatch). `api.py` import změněn na `from email_actions import email_action`. Veřejné API: `email_action()` + `email_undo()` (drop underscore). Deployed PROD.
 
 ### Popis
 Funkce `_email_action()` a její helpery (`_bridge_call`, `_mark_spam`, `_get_email_from`, `_folder_for_email`, `_calendar_for_email`, `_parse_invitation_subject`, mapy `TYP_FOLDER`, `_CAL_FROM_MAP`, `_CZ_MONTHS`, `ACTION_LABEL`) leží v `services/ingest/telegram_callback.py`, ale **nejsou** Telegram-specifické — jsou to sdílená business logika pro email akce.
@@ -314,7 +314,9 @@ docker exec brogiasist_scheduler ls /app/attachments/   # ← kontejner storage,
 
 **Severita:** HIGH (každý crash = ztráta in-flight requestu na Apple Studio)
 **Zjištěno:** 2026-04-26 (PROD provoz)
-**Status:** FIXED 2026-04-26 (workaround #1)
+**Status:** FIXED 2026-04-26 — proper fix (`os.posix_spawn`), commit `6684cfc` na branch `2`
+
+⚠️ **Workaround #1 (`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`) na macOS 26.4.1 NEFUNGOVAL.** Apple ho v některém release ignoruje. Fix nasazen v 19:33, nový crash o 15 minut později (19:48). Eskalace na proper fix #3.
 
 ### Popis
 Apple Bridge na PajaAppleStudio (10.55.2.117, Python 3.11.15 + uvicorn) náhodně padá s `EXC_BAD_ACCESS (SIGSEGV)` — v jeden den dva crashe (18:17, 19:28). Crash report ukazuje:
@@ -344,26 +346,29 @@ Thread 0 Crashed:
 ### Příčina
 Apple od macOS Catalina nedoporučuje `fork()` v multi-threaded apps. uvicorn má vlákna, `subprocess.Popen` v handlerech volá `fork()`+`exec()`, v child procesu se Apple's `Network.framework` `nw_settings_child_has_forked()` atfork hook pokusí refreshnout `_os_log_preferences` a segfaultuje, protože v child memory není inicializovaný log subsystem.
 
-### Aplikované řešení (workaround #1)
-Do launchd plistu Apple Bridge přidána env proměnná `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`:
+### Aplikovaná řešení
 
-```xml
-<key>EnvironmentVariables</key>
-<dict>
-    <key>OBJC_DISABLE_INITIALIZE_FORK_SAFETY</key>
-    <string>YES</string>
-</dict>
+#### Workaround #1 (NEFUNGOVAL na macOS 26.4.1) — env var `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`
+Nasazeno 19:33, nový crash 19:48 (o 15 min později). Apple v macOS 26.x env var ignoruje. **Odstraněno z plistů během cleanup commitu.**
+
+#### Proper fix (FUNGUJE) — `os.posix_spawn()` místo `subprocess.run()`
+Refactor 2 wrapper funkcí v `services/apple-bridge/main.py`:
+
+```python
+def _spawn_osascript(args: list[str], timeout: int) -> tuple[int, str, str]:
+    # os.posix_spawn() s file_actions (POSIX_SPAWN_DUP2 + POSIX_SPAWN_CLOSE pro pipes)
+    # → atomický syscall, neforkuje, atfork hooks Apple's Network.framework se nevolají
 ```
 
-Aplikováno na:
-- `~/Library/LaunchAgents/cz.brogiasist.apple-bridge.plist` na Apple Studio (in-place edit + `launchctl unload/load`)
-- `services/apple-bridge/cz.brogiasist.apple-bridge.plist` template v gitu (pro budoucí deployy)
+`run_applescript` a `run_jxa` volají tento helper, API zůstává — 12 callsites se nemění.
 
-### Známé limitace fixu
-- Apple-deprecated workaround — může v budoucích macOS přestat fungovat (macOS 27+?)
-- **Pokud crashe pokračují**, eskalace na proper fix #3:
-  - `os.posix_spawn()` místo `subprocess.Popen` (1–2 h refactor)
-  - + `multiprocessing.set_start_method('spawn')` na startu
+**Verifikace:**
+- Lokální stress test (MacBook, M1 Ultra: nope → MacBook Pro): 50 requestů `/omnifocus/tasks`, 5 paralelních osascript subprocesů, 21 minut zátěže → **0 nových crash reportů**
+- Deploy na Apple Studio: commit `6684cfc` (branch `2`), `scp main.py` + `launchctl unload/load`
+- `/health` OK po reload
+
+### Co dál sledovat
+24h po deployi: `ssh dxpavel@10.55.2.117 "ls ~/Library/Logs/DiagnosticReports/Python-*.ips"` — pokud baseline 8 nepřibude, fix drží.
 
 ### Jak ověřit po opravě
 ```bash
@@ -379,6 +384,307 @@ ls -la ~/Library/Logs/DiagnosticReports/Python-*.ips
 # Bridge musí běžet
 curl -sm 5 http://localhost:9100/health
 # → {"ok":true,"ts":"..."}
+```
+
+---
+
+## BUG-009 — Group matching v decision_rules nefunguje (disjoint datasets v apple_contacts)
+
+**Severita:** HIGH (blokuje VIP/personal pravidla v decision_rules engine)
+**Zjištěno:** 2026-04-26 (blocker C verifikace)
+**Status:** **FIXED 2026-04-27 commit `6b43643`** — JXA `/contacts/all` rozšířen o per-kontakt `emails`/`phones`, starý dataset (1180 řádků) smazán, re-ingest. Po fixu: 1181 kontaktů, **512** s `email ∩ groups` (před: 0). Decision engine query teď matchne. Verify: 4 backfilled emaily správně dostaly `is_personal=true` (Drexler RODINA 🛠, Zámečnictví KAMARADI 🥂, ...).
+
+### Popis
+Tabulka `apple_contacts` obsahuje **2360 řádků** ve dvou disjoint datasets:
+
+| Dataset | Počet | emails | groups | source_id format |
+|---|---|---|---|---|
+| Starý (DEV/MacBook ingest, před PROD migrací) | 1180 | ✅ má | ❌ nemá | `XXX:ABPerson` (MacBook ZUNIQUEID) |
+| Nový (PROD/Apple Studio JXA, 2026-04-26 19:06) | 1180 | ❌ prázdné `[]` | ✅ má (1138 ve skupinách) | `XXX:ABPerson` (Apple Studio ZUNIQUEID — JINÉ UUIDs!) |
+
+`person.id()` z JXA Contacts.app vrací stejný formát jako sqlite ZUNIQUEID,
+ale **lokální UUIDs jsou per-Mac unikátní** (i přes iCloud sync). ON CONFLICT
+matching přes `source_id` selhal → vznikly duplicity.
+
+### Důsledek
+Decision rules engine v `services/ingest/decision_engine.py:_eval_group()`
+dělá SQL JOIN:
+
+```sql
+SELECT groups FROM apple_contacts
+WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(emails) AS e
+              WHERE LOWER(e->>'value') = LOWER(<sender>))
+  AND jsonb_array_length(groups) > 0
+```
+
+**Žádný řádek v DB nemá současně neprázdné `emails` AND `groups`** → query
+nikdy nematchne → pravidla `group_vip` (priority 50) a `sender_personal`
+(priority 70) **nikdy netriggerují**, i když je sender v Pavlovo adresáři.
+
+### Návrh řešení
+1. Rozšířit JXA `/contacts/all` v `services/apple-bridge/main.py` o per-kontakt
+   `p.emails().map(...)` a `p.phones().map(...)` — bude pomalejší (1180 × 3
+   bridge calls = ~3 min, timeout zvýšit na 600s).
+2. SQL: `DELETE FROM apple_contacts WHERE ingested_at < '2026-04-26 19:06:00'`
+   — odstraní starý dataset (zůstane 1180 nových se kompletními daty).
+3. Trigger ingest manuálně: `docker exec -w /app brogiasist-scheduler python3 -c
+   'from ingest_apple_apps import ingest_contacts; ingest_contacts()'`
+4. Verify: `SELECT count(*) FROM apple_contacts WHERE jsonb_array_length(emails) > 0
+   AND jsonb_array_length(groups) > 0;` (musí > 0)
+
+Náročnost: ~2 h vč. testování.
+
+### Jak ověřit po opravě
+```bash
+# spustit standalone test decision engine na 25 reálných emailech
+docker cp services/ingest/test_decision.py brogiasist-scheduler:/app/
+docker exec -w /app brogiasist-scheduler python3 test_decision.py
+# výstup musí ukázat aspoň 1× 'group_vip' nebo 'sender_personal' v matched_rules
+```
+
+---
+
+## BUG-010 — Mail.app AppleScript neumí custom headers (X-Brogi-Auto)
+
+**Severita:** MEDIUM (blokuje D3+ implementaci `/calendar/reply` + `/mail/send`)
+**Zjištěno:** 2026-04-26 (blocker D3 audit)
+**Status:** OPEN — vyžaduje architektní rozhodnutí Pavla
+
+### Popis
+Per `docs/brogiasist-semantics-v1.md` sekce 13: bot odesílá Accept/Decline
+reply pozvánek a generic emails s headerem `X-Brogi-Auto: <action>`. IMAP
+filter na Sent folder pak ignoruje takto označené emaily (aby je bot zase
+neklasifikoval).
+
+**Apple's Mail.app AppleScript dictionary** ale neumožňuje nastavit custom
+headers při `make new outgoing message`. Properties co lze nastavit:
+`subject`, `content`, `sender`, `to recipients`, `cc recipients`, `visible`,
+`message signature`. **Žádná `headers` collection.**
+
+### Důsledek
+Implementace `/mail/send` endpointu v Apple Bridge má 3 možnosti, žádná
+ideální:
+
+| Workaround | Výhoda | Nevýhoda |
+|---|---|---|
+| **(a) Subject marker** `[BrogiASIST-auto:<action>]` na konec | snadná detekce v IMAP | zaplevelí subject pro příjemce |
+| **(b) Reply-To header** Mail.app to umí přes `with properties {reply to:...}` *(neověřeno)* | čistý subject | vyžaduje speciální mailbox `auto+brogi@dxpsolutions.cz` (setup) |
+| **(c) Body footer** `<!-- X-Brogi-Auto: <action> -->` na konec body | neviditelné v textových klientech | viditelné v plaintext, HTML klienti to vidí; ne 100% spolehlivé |
+| **(d) Direct SMTP** mimo Mail.app | full control nad headers | per-account SMTP credentials, není identický s Mail.app sent folder |
+
+### Návrh
+Pavel rozhodne mezi (a)/(b)/(c)/(d). Jakmile máme rozhodnutí:
+- 1–2 h implementace `/mail/send` endpointu v Apple Bridge
+- 1 h implementace `/calendar/reply` (vrstva nad `/mail/send` s ICS reply payload)
+- 30 min IMAP filter logic v `ingest_email.py` (skip pokud detekce auto-marker)
+
+### Jak ověřit po opravě
+1. Pavel klikne `📅 2cal+Accept` v TG na pozvánku → bot vytvoří calendar event
+   + odešle Accept reply pozvateli
+2. Bot reply skončí v Sent folderu — IMAP IDLE ho zachytí
+3. Ingest detekuje auto-marker → skip klasifikace (neuloží do `email_messages`
+   nebo uloží s `status='ignored'`)
+4. Pavel v dashboardu nevidí svůj vlastní reply jako nový k klasifikaci
+
+---
+
+## BUG-011 — Case-insensitive email match v decision_engine group rules
+
+**Severita:** MEDIUM (skrytá příčina nematchování pro ~30 % personal kontaktů)
+**Zjištěno:** 2026-04-27 (po H3 deploy + smoke test)
+**Status:** **FIXED 2026-04-27 commit `af5df96`**
+
+### Popis
+Po fixu BUG-009 jsme verifikovali decision engine: pro `roman.hruby@schmachtl.cz`
+(MEDVEDI 🧸) vrátil `is_personal=true`. Ale pro `Koscusko@seznam.cz` (FOCENI 📸,
+v adresáři jako "Honzik Košťál") rule **nematchla** — flag zůstal `false`.
+
+### Příčina
+DB hodnota `Koscusko@seznam.cz` má capital K (původně psaný v Apple Contacts).
+`_extract_email_addr()` vrací lowercase `koscusko@seznam.cz`. JSONB `@>` operátor
+je **case-sensitive**, containment match selhal:
+
+```python
+# PŘED: case-sensitive
+SELECT groups FROM apple_contacts
+WHERE emails @> '[{"value": "koscusko@seznam.cz"}]'::jsonb  ← FAIL (DB má "Koscusko")
+```
+
+### Fix
+Nahrazeno přes `jsonb_array_elements` + oboustranné `LOWER()`:
+
+```python
+SELECT groups FROM apple_contacts
+WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(emails) AS e
+              WHERE LOWER(e->>'value') = LOWER(%s))
+  AND jsonb_array_length(groups) > 0
+```
+
+### Performance impact
+Per-rule call dělá 1 SQL query na 1181 řádků JSONB scan. Bez indexu cca ~ms.
+Pokud bude `decision_rules` engine spouštěn pro velký objem (>100 emailů/min),
+zvážit funkční index `CREATE INDEX ON apple_contacts USING gin
+((lower(emails::text)) gin_trgm_ops)`. Dnes není potřeba.
+
+### Jak ověřit
+```python
+from decision_engine import evaluate_email
+d = evaluate_email({'from_address': 'Koscusko@seznam.cz', 'subject': 't',
+                    'raw_payload': {'headers':{}}, 'body_text': ''})
+assert d['is_personal'] is True
+assert 'FOCENI 📸' in d['matched_groups']
+```
+
+---
+
+## BUG-012 — `fetch_messages` spadne na `data[0]=None` z iCloud IMAP SEARCH
+
+**Severita:** medium (iCloud account negeneruje real-time IDLE notifikace, jen 30min scan funguje)
+**Zjištěno:** 2026-05-04 (drift fix session)
+**Status:** FIXED 2026-05-04 commit `<TBD>`
+
+### Popis
+[services/ingest/ingest_email.py:192](services/ingest/ingest_email.py:192) — po `m.uid('SEARCH', None, f'SINCE {since_str}')` kód volal `data[0].split()` bez ošetření. iCloud IMAP občas vrací `data=[None]` (prázdný výsledek nebo dočasný server glitch) → `AttributeError: 'NoneType' object has no attribute 'split'`.
+
+V logu PROD: každých 30s `[ERROR] [dxpavel@icloud.com] Chyba: 'NoneType' object has no attribute 'split' — reconnect za 30s`. IDLE listener pro iCloud v cyklickém crash/reconnect.
+
+### Důsledek
+- iCloud nedostává **real-time** notifikace přes IMAP IDLE (každý nový email čeká na 30min `job_email_scan` fallback místo na okamžitý IDLE push).
+- Logy zaspaměny chybou — ostatní bugy se v šumu hůř hledají.
+- Stejný anti-pattern (`data[0].split()` bez guard) je v 4 backfill skriptech, ale ty mají `if typ == "OK" and data[0]` guard PŘED voláním → tam OK.
+
+### Fix
+```python
+# před:
+uids = data[0].split()
+# po:
+uids = (data[0] or b"").split() if data else []
+```
+
+Plus pojistka pro `to_raw` (může být None po `decode_header_value`):
+```python
+to_raw = decode_header_value(msg.get("To", "")) or ""
+```
+
+### Jak ověřit po opravě
+```bash
+ssh pavel@10.55.2.231 "docker logs brogiasist-scheduler --since 5m 2>&1 | grep 'NoneType.*split'"
+# musí vrátit prázdný výsledek
+ssh pavel@10.55.2.231 "docker logs brogiasist-scheduler --since 5m 2>&1 | grep 'IMAP login OK: dxpavel@icloud.com'"
+# musí ukázat health login bez následného crashe
+```
+
+### Lessons
+Sekce **44** v `brogiasist-lessons-learned-v1.md`.
+
+---
+
+## BUG-013 — Llama vrací raw placeholder `<0.0-1.0>` místo čísla v `confidence`
+
+**Severita:** medium (selže klasifikace celého emailu — `continue` v outer loop, email zůstane v `status='new'`)
+**Zjištěno:** 2026-05-04 (PROD log audit po BUG-012 deploy, 13:27:35 UTC)
+**Status:** **FIXED 2026-05-04 commit `b8e88a9`** — try/except + range check (0.0-1.0), fallback 0.5 + warning log. Deployed PROD 2026-05-04 ~14:51 UTC. Verifikováno: postižený email 7c5bc148 reklasifikován ÚKOL.
+
+### Popis
+[services/ingest/classify_emails.py:331](services/ingest/classify_emails.py:331) — `confidence = float(result.get("confidence", 0.5))` bez sanitize.
+
+Llama prompt template ([classify_emails.py:54](services/ingest/classify_emails.py:54)) má placeholder `"confidence": <0.0-1.0>`. Občas (≈1×/den dle observation) Llama tu hodnotu **echo-uje doslova** místo aby ji vyhodnotila — vrátí `{"confidence": "<0.0-1.0>"}`. `float("<0.0-1.0>")` → `ValueError: could not convert string to float`. Výjimka propadne do outer try/except, email se logguje jako `[ERROR] classify <id>: could not convert string to float: '<0.0-1.0>'` a klasifikace skončí.
+
+### Důsledek
+- Email zůstane neklasifikovaný (`status='new'`, `typ=NULL`)
+- TG notifikace neproběhne — Pavel se o emailu nedozví dokud někdo ručně netriggerne re-classify
+- Aktuálně postižen: `7c5bc148-2f4c-4872-ac54-8d48cb5b2d6f` (2026-05-04 13:27:35)
+
+### Příčina
+Sanitize logika v [classify_emails.py:332-355](services/ingest/classify_emails.py:332) řeší **`typ`** (whitelist `_VALID_TYP`) a **`task_status`** (whitelist `_VALID_TASK_STATUS`), ale **`confidence` chybí**. Stejný anti-pattern jako sanitize problému z lekce **#42**, jen pro číselný field.
+
+### Návrh řešení
+```python
+# services/ingest/classify_emails.py:331
+raw_confidence = result.get("confidence", 0.5)
+try:
+    confidence = float(raw_confidence)
+    if not (0.0 <= confidence <= 1.0):
+        raise ValueError(f"out of range: {confidence}")
+except (TypeError, ValueError) as e:
+    log.warning(f"Llama vrátila invalid confidence={raw_confidence!r}, fallback 0.5 ({email_id}): {e}")
+    confidence = 0.5
+```
+
+Plus zvážit retry Llama call pokud více polí vrátí raw placeholders (signál že model je v špatném stavu / temp glitch).
+
+### Jak ověřit po opravě
+```bash
+ssh pavel@10.55.2.231 "docker logs brogiasist-scheduler --since 24h 2>&1 | grep -E 'could not convert.*0\\.0-1\\.0|invalid confidence'"
+# musí: 0× ValueError, případně N× warning "fallback 0.5"
+```
+
+A re-classify postiženého emailu:
+```sql
+UPDATE email_messages SET status='new', typ=NULL WHERE id='7c5bc148-2f4c-4872-ac54-8d48cb5b2d6f';
+```
+Pak `classify_new_emails` proběhne v dalším 5min cyklu.
+
+---
+
+## BUG-014 — `mark_read` selhává s `STORE illegal in state AUTH` po `move_to_trash`
+
+**Severita:** medium (false ERROR v logu po každé `2del`/`2spam` akci na Gmail/Synology, email reálně už v Trash)
+**Zjištěno:** 2026-05-04 (PROD log audit, 13:32:23 + 13:47:00 UTC)
+**Status:** **FIXED 2026-05-04 commit `e5df8a7`** — `_mark_read_after_action` skip pro Trash/Deleted/Spam/Junk folders + `mark_read` check `m.select()` návrat. Deployed PROD 2026-05-04 ~14:51 UTC.
+
+### Popis
+Sekvence z PROD logu:
+```
+13:32:22 [INFO] move_to_trash OK: dxpavel@gmail.com uid=114152 → [Gmail]/Trash
+13:32:23 [ERROR] mark_read dxpavel@gmail.com uid=114152: command STORE illegal in state AUTH, only allowed in states SELECTED
+```
+
+Po úspěšném `move_to_trash` se volá `_mark_read_after_action` → `mark_read(email_id)`. To načte z DB `(mailbox, uid, folder)` = `(dxpavel@gmail.com, 114152, [Gmail]/Trash)` — folder už je updatovaný (`_update_db_folder` to udělalo v rámci move). Ale **původní UID 114152 v `[Gmail]/Trash` neexistuje** — Gmail při MOVE generuje nový UID v cílové složce (UIDVALIDITY se mění mezi folders).
+
+Pak [imap_actions.py:112-113](services/ingest/imap_actions.py:112):
+```python
+m.select(imap_folder)            # pravděpodobně vrátí non-OK (nebo OK ale uid neexistuje)
+m.uid("STORE", str(imap_uid), "+FLAGS", "(\\Seen)")  # crashne s STORE illegal
+```
+
+Navíc — `m.select()` návratový kód kód ignoruje. Pokud SELECT selže (server vrátí `BAD`/`NO`), spojení zůstane ve stavu AUTH a STORE pak vyhodí `illegal in state AUTH`.
+
+### Důsledek
+- Každá `2del`/`2spam` akce na Gmail/Synology generuje 1× false ERROR v logu (zatemňuje skutečné errory)
+- Funkčně OK — email **už je v Trash**, `_update_db_folder` v `move_to_trash` taky nastavil DB `is_read=TRUE` (parametr `mark_read=True` v line 139)
+- Tedy `mark_read` po `move_to_trash` je **redundantní** — práce už je hotová
+
+### Návrh řešení
+**Varianta A (preferovaná, 1 řádek):** v `_mark_read_after_action` ([imap_actions.py:174](services/ingest/imap_actions.py:174)) skip pro emaily co jsou už v Trash/Deleted:
+```python
+def _mark_read_after_action(email_id):
+    info = get_imap_info(email_id)
+    if not info:
+        return
+    _, _, folder = info
+    if folder and any(t in folder.lower() for t in ("trash", "deleted", "spam")):
+        return  # email už není v INBOX, mark_read je no-op
+    mark_read(email_id)
+```
+
+**Varianta B (defensive, robustnější):** v `mark_read` ([imap_actions.py:109-113](services/ingest/imap_actions.py:109)) check návratu SELECT:
+```python
+typ, _ = m.select(imap_folder)
+if typ != "OK":
+    log.warning(f"mark_read skip: SELECT {imap_folder} failed ({typ})")
+    m.logout()
+    return False
+m.uid("STORE", ...)
+```
+
+**Doporučuji A + B** — A řeší root cause (zbytečné volání), B je pojistka pro budoucí případy.
+
+### Jak ověřit po opravě
+```bash
+# klik na 2del v TG na test email z Gmail
+ssh pavel@10.55.2.231 "docker logs brogiasist-scheduler --since 5m 2>&1 | grep -E 'STORE illegal|mark_read.*Gmail'"
+# musí: 0× STORE illegal, žádný mark_read pokus po move_to_trash
 ```
 
 ---

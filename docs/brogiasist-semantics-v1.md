@@ -65,7 +65,7 @@ Klasifikuje **obsah** emailu, ne odesílatele. Jedna hodnota per email.
 
 ---
 
-## 3. ACTION (8 hodnot, malými písmeny, prefix `2` = „to")
+## 3. ACTION (9 hodnot, malými písmeny, prefix `2` = „to")
 
 Sémantika: `2` jako **„to"** (foneticky / anglicky) — kam to přesměrujeme. Jedna ACTION per kliknutí.
 
@@ -76,7 +76,8 @@ Sémantika: `2` jako **„to"** (foneticky / anglicky) — kam to přesměrujeme
 | `2cal` | Pokud `.ics` → spolehlivý parse (priorita), jinak text-parse → Apple Calendar event. **Volitelně Accept reply** (TG potvrzení). | ZPRACOVANÝ | `BrogiASIST/HOTOVO` |
 | `2note` | Předá text do **Apple Notes** (žádný termín). | ZPRACOVANÝ | `BrogiASIST/HOTOVO` |
 | `2hotovo` | Označí jako vyřízené, žádná systémová akce. | ZPRACOVANÝ | `BrogiASIST/HOTOVO` (DOKLADY pro DOKLAD, NABIDKY pro NABÍDKA) |
-| `2spam` | Smazání + zápis do Chroma `email_actions`. **Volitelně Decline reply** pro POZVÁNKA. | SMAZANÝ | `Trash` (IMAP nativní) |
+| `2del` | **Jednorázové smazání** (duplicity, šum). Zápis do Chroma `email_actions`. **NE**zapisuje `classification_rules` — sender se neoznačí jako spam. | SMAZANÝ | `Trash` (IMAP nativní) |
+| `2spam` | Smazání + `classification_rules` (sender → další maily auto-spam) + Chroma `email_actions`. **Volitelně Decline reply** pro POZVÁNKA. | SMAZANÝ | `Trash` (IMAP nativní) |
 | `2unsub` | 1) `List-Unsubscribe` header (RFC, preferovaně). 2) Fallback link v textu. | ZPRACOVANÝ | `BrogiASIST/HOTOVO` |
 | `2skip` | Nechá v inboxu, žádná akce, jen flag „musím se zamyslet". | ČEKAJÍCÍ | (zůstává v INBOX) |
 
@@ -282,15 +283,29 @@ CREATE INDEX idx_pending_status ON pending_actions(status, created_at);
 
 | TYP | Tlačítka v TG zprávě |
 |---|---|
-| `ÚKOL` | `✅ 2hotovo` · `📥 2of` · `⏰ 2rem` · `📝 2note` · `⏭ 2skip` · `🗑 2spam` |
-| `DOKLAD` | `📥 2of` (zaplatit) · `📝 2note` · `✅ 2hotovo` · `⏭ 2skip` |
-| `NABÍDKA` | `📝 2note` · `🚫 2unsub` · `🗑 2spam` · `⏭ 2skip` |
-| `NOTIFIKACE` | `✅ 2hotovo` · `⏭ 2skip` · `🗑 2spam` |
-| `POZVÁNKA` | `📅 2cal + Accept reply` · `📅 2cal jen` · `❌ Decline reply` · `⏭ 2skip` |
-| `INFO` | `✅ 2hotovo` · `⏭ 2skip` · `🚫 2unsub` (jen pokud má List-Unsubscribe) |
-| `ERROR` | `✅ 2hotovo` · `⏭ 2skip` |
-| `LIST` | (žádná TG zpráva, auto-2hotovo) |
-| `ENCRYPTED` | `👁 Otevřu sám` · `⏭ 2skip` |
+**Univerzální 3×3 layout pro všechny TYPy** (Pavlovo rozhodnutí 2026-04-27 — předchozí per-TYP redukce vedla k frustraci, kdy chybělo žádané tlačítko):
+
+```
+Řada 1:  ✅ 2hotovo  📥 2of      ⏰ 2rem
+Řada 2:  📅 2cal     📝 2note    🚫 2unsub*
+Řada 3:  ⏭ 2skip    🗑 2del     🚫 2spam
+```
+
+\* `🚫 2unsub` se zobrazí **jen když email má `List-Unsubscribe` header** (jinak řada 2 obsahuje pouze 2 tlačítka).
+
+| TYP | Tlačítka |
+|---|---|
+| `ÚKOL`, `DOKLAD`, `NABÍDKA`, `NOTIFIKACE`, `POZVÁNKA`, `INFO`, `ERROR` | univerzální 3×3 layout |
+| `ENCRYPTED` | extra řádek `👁 Otevřu sám` **+** univerzální 3×3 |
+| `LIST` | (žádná TG zpráva — auto-2hotovo) |
+
+> `2del` = univerzální „rychle smazat" tlačítko (duplicity, šum). Pošta jde do `Trash`,
+> akce se učí v Chromě (příště podobný vzor → návrh 2del), ale sender se **NE**označuje
+> jako spam — žádné auto-spam pro další maily od něj. Pro to slouží `2spam`.
+
+> **Historická poznámka:** Do 2026-04-27 měl každý TYP svou redukovanou sadu tlačítek
+> (např. NABÍDKA jen 2note/2unsub/2skip/2del/2spam). Pavel: „raději ať se ukazují všechna
+> tlačítka, abych nemusel přepínat z TG do dashboardu pro chybějící akci". Proto sjednoceno.
 
 ### Threading TG flow
 
@@ -344,7 +359,7 @@ Pokud nový email v existujícím threadu, kde už je `of_task_id` set:
 | Akce | Chování |
 |---|---|
 | `2of`, `2cal`, `2note`, `2rem` | Zapsat do `pending_actions`, status=pending |
-| `2spam`, `2unsub`, `2hotovo`, `2skip` | Běží normálně (nepotřebují Apple Bridge) |
+| `2del`, `2spam`, `2unsub`, `2hotovo`, `2skip` | Běží normálně (nepotřebují Apple Bridge) |
 | Ingest, klasifikace, AI learning | Pokračuje normálně |
 | TG notifikace | Bot pošle zprávu „⚠️ Apple Studio offline — akce uložena do fronty (#42 v queue)" |
 
@@ -400,10 +415,18 @@ Pavel klikne ACTION → bot uloží do Chroma `email_actions`:
 - Pairwise cosine, prah < 0.05 = duplicate
 - Ponechat record s nejnovějším `created_at`, ostatní smazat
 
-### Auto-aplikace (`find_repeat_action`)
+### Návrh akce z Chromy (`find_repeat_action_with_score`)
 
-- Před AI klasifikací: search v Chromě
-- Pokud `cosine < 0.15` → auto-aplikuj zapamatovanou akci
+- V `notify_classified_emails`: pro každý nový email cosine search v Chromě
+- Pokud `cosine ≤ AUTO_THRESHOLD_DIST` (~0.15) a `≥ AUTO_THRESHOLD_COUNT` sousedů
+  mělo stejnou akci → vrátí `(action, match_count, total_close)`
+- **2026-04-27: silent auto-apply VYPNUTÝ.** Místo automatické exekuce zobrazí
+  TG zpráva navíc 1. řádek `⭐ Navrženo: 2X (NN%) ⭐` (NN = `match/total*100`)
+  a v 3×3 layoutu predikované tlačítko obalí hvězdičkami `⭐ 2X ⭐`. Pavel
+  potvrdí kliknutím (na velký řádek nahoře nebo zvýrazněné tlačítko v mřížce
+  — oba mají stejný `callback_data`).
+- Důvod změny: incident s `krouzecka@volny.cz` 2026-04-27 — silent auto-apply
+  by mohl smazat legitimní mail bez možnosti zásahu Pavlem.
 - Cosine < 0.05 = velmi podobné, < 0.15 = podobné (současná hodnota)
 
 ---
@@ -635,4 +658,70 @@ od: pavel.drexler@mbank.cz
 |---|---|
 | 2026-04-26 | v1.0 iniciální release |
 | 2026-04-26 | v1.1 doplněna sekce 19 (grafická semantika — kostičky / fill / kazeťák symboly) |
+| 2026-04-26 | v1.2 doplněna sekce 21 (implementační status na branch `2`) |
+
+---
+
+## 21. Implementační status na branch `2` (2026-04-26)
+
+> Detailní handoff pro pokračování: viz `docs/SESSION-HANDOFF-D-CONTINUATION.md`.
+
+### Hotovo ✅
+
+| Sekce spec | Implementace | Commit |
+|---|---|---|
+| 1. TYPy (6 z 9) | Llama prompt vrací ÚKOL/DOKLAD/NABÍDKA/NOTIFIKACE/POZVÁNKA/INFO | `7d11f75` |
+| 1. TYPy (3 z 9) | ERROR/LIST/ENCRYPTED detekuje decision_rules header check PŘED Llamou | `8ef45a7` |
+| 2. STATUS — schema | sloupce ready, hodnoty v kódu zatím legacy (`new`/`reviewed`) | `34a55c3` |
+| 3. ACTION — TG buttons | Per-TYP tlačítka v `_buttons_for_typ()`; callback_data backward compat (email:of:id) | `7d11f75` |
+| 4. Skupiny kontaktů (mapping) | Apple Bridge JXA vrací groups; DB sloupec `apple_contacts.groups` | `8622cb5`, `b267768` |
+| 5. Decision flow + Mermaid | Engine `decision_engine.py` + 9 pravidel v DB | `8ef45a7` |
+| 6. Schema rozšíření | `decision_rules`, `pending_actions`, threading sloupce v `email_messages` | `34a55c3`, `8ef45a7` |
+| 7. TG tlačítka per TYP | `notify_emails:_buttons_for_typ()` | `7d11f75` |
+| 8. Threading — schema | message_id, in_reply_to, thread_id sloupce + ingest plněn | `34a55c3` |
+| 9. Failure handling — queue | `pending_worker.py` + `drain_queue` job | `ed039b1` |
+| 10. Bot odesílá emaily | endpointy `/of/task/{id}/append_note`, `/notes/{id}/append` ready | `5ceb3d8`, `110883e` |
+| 11. Učení & Chroma | beze změn (existující `find_repeat_action` + `store_email_action`) | — |
+| 12. Llama prompt (500 znaků) | Body limit 400 → 500 | `7d11f75` |
+| 13. X-Brogi-Auto header | 🍎 BUG-010 — Mail.app neumí custom headers | OPEN |
+| 14. Quiet hours | „Pavel si ztiší telefon sám" — žádný kód | — |
+| 15. IMAP složky | beze změn (existující `BrogiASIST/HOTOVO`, `DOKLADY`, `NABIDKY`) | — |
+| 19. Grafická semantika | CSS variables + classes + email tabulka kostičky | `a851a30`, `9da5bd2` |
+
+### Zbývá ⏳ (před production v2)
+
+#### HIGH (block)
+
+| Bod | Co | Důvod |
+|---|---|---|
+| H1 — BUG-009 | Group matching v decision_rules — data ve 2 disjoint datasets | Fix: rozšířit JXA o emails + smazat starý dataset |
+| H2 — D5+ | Threading TG flow callbacks (`of_open`, `of_append` v telegram_callback) | Endpointy ready, chybí UI/handler logic |
+| H3 — D2 | Action wiring decision_rules flagů (`is_personal`, `force_tg_notify`, `no_auto_action`) | Flagy se zapisují, ale neaplikují v classify/notify pipeline |
+
+#### MEDIUM
+
+| Bod | Co | Důvod |
+|---|---|---|
+| M1 — BUG-010 | `/calendar/reply` + `/mail/send` Apple Bridge endpointy | Mail.app neumí custom headers → architektní rozhodnutí workaround |
+| M2 — sekce 3 | Akce `2undo` (TTL 1h) | Spec definuje, code chybí |
+| M3 — sekce 19 | STATUS kolečko v email tabulce | CSS classes ready, jen Jinja apply |
+| M4 — sekce 6 | WebUI editor pro `decision_rules` | Aktuálně edit jen přes SQL |
+
+#### LOW (cleanup)
+
+| Bod | Co |
+|---|---|
+| L1 | Refaktor `_save_classification` na nové STATUS hodnoty (NOVÝ/PŘEČTENÝ/...) místo legacy (`new`/`reviewed`) — Pavel rozhodl „nemigrujeme", ale nové emaily by měly do nového formátu |
+| L2 | Smazat `/contacts/all_sqlite` legacy endpoint pokud nikdy nepoužijeme |
+| L3 | Multi-action (1 email → víc akcí) — odloženo do v2 features |
+| L4 | Tag `v2.0` po dokončení H1+H2+H3 + merge `2` → main |
+
+### Změny realizované MIMO spec (2026-04-26)
+
+| Co | Důvod |
+|---|---|
+| BUG-008 fix `os.posix_spawn()` | macOS multi-threaded fork() crash — workaround #1 nefungoval |
+| `/contacts/all` přepsáno z sqlite na JXA | TCC FDA limitations pro launchd-spawned procesy (lessons sekce 36) |
+| Apple Contacts hash check + 12h interval | Ušetří 99 % DB writes při stabilních kontaktech |
+| Pavlovo rozhodnutí: nemigrujeme existující data | 25 emailů + 2360 kontaktů zůstane v starém formátu, nové v novém |
 

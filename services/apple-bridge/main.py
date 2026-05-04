@@ -1,11 +1,13 @@
 from __future__ import annotations  # Python 3.9 kompat (PROD na Apple Studio) — `str | None` syntax
 
 import base64
-import subprocess
 import json
 import os
 import re
+import select
+import signal
 import sqlite3
+import time
 import urllib.parse
 import caldav
 from datetime import datetime, timezone, timedelta, date
@@ -26,24 +28,89 @@ CALDAV_SKIP = {"Garmin Connect", "Siri Suggestions", "Birthdays", "Narozeniny",
                "České státní svátky", "Kalendář bez názvu"}
 
 
+_OSASCRIPT_PATH = "/usr/bin/osascript"
+
+
+def _spawn_osascript(args: list[str], timeout: int) -> tuple[int, str, str]:
+    """Spustí osascript přes os.posix_spawn() místo subprocess.run().
+
+    Důvod: macOS bug (BUG-008) — fork() v multi-threaded Python procesu
+    (uvicorn + FastAPI threadpool) způsobuje SIGSEGV v Network.framework
+    atfork hook. posix_spawn je atomický syscall, neforkuje, neprovádí
+    kopii address space → atfork hooks se nevolají → bug se neprojeví.
+
+    Return: (returncode, stdout, stderr) — kompatibilní s subprocess.CompletedProcess.
+    """
+    stdout_r, stdout_w = os.pipe()
+    stderr_r, stderr_w = os.pipe()
+    file_actions = [
+        (os.POSIX_SPAWN_DUP2, stdout_w, 1),
+        (os.POSIX_SPAWN_CLOSE, stdout_r),
+        (os.POSIX_SPAWN_DUP2, stderr_w, 2),
+        (os.POSIX_SPAWN_CLOSE, stderr_r),
+    ]
+    try:
+        pid = os.posix_spawn(_OSASCRIPT_PATH, args, os.environ, file_actions=file_actions)
+    except OSError:
+        for fd in (stdout_r, stdout_w, stderr_r, stderr_w):
+            try: os.close(fd)
+            except OSError: pass
+        raise
+
+    os.close(stdout_w)
+    os.close(stderr_w)
+
+    deadline = time.monotonic() + timeout
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    open_fds = {stdout_r, stderr_r}
+
+    try:
+        while open_fds:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                try: os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+                os.waitpid(pid, 0)
+                raise TimeoutError(f"osascript timed out after {timeout}s")
+
+            ready, _, _ = select.select(list(open_fds), [], [], remaining)
+            if not ready:
+                continue
+            for fd in ready:
+                data = os.read(fd, 65536)
+                if not data:
+                    open_fds.discard(fd)
+                    os.close(fd)
+                    continue
+                if fd == stdout_r:
+                    stdout_chunks.append(data)
+                else:
+                    stderr_chunks.append(data)
+        _, status = os.waitpid(pid, 0)
+        returncode = os.waitstatus_to_exitcode(status)
+    finally:
+        for fd in open_fds:
+            try: os.close(fd)
+            except OSError: pass
+
+    stdout = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+    stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+    return (returncode, stdout, stderr)
+
+
 def run_applescript(script: str, timeout: int = 30) -> str:
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True, text=True, timeout=timeout
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip())
-    return result.stdout.strip()
+    rc, out, err = _spawn_osascript(["osascript", "-e", script], timeout)
+    if rc != 0:
+        raise RuntimeError(err.strip())
+    return out.strip()
 
 
 def run_jxa(script: str, timeout: int = 90) -> any:
-    result = subprocess.run(
-        ["osascript", "-l", "JavaScript", "-e", script],
-        capture_output=True, text=True, timeout=timeout
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip())
-    return json.loads(result.stdout.strip())
+    rc, out, err = _spawn_osascript(["osascript", "-l", "JavaScript", "-e", script], timeout)
+    if rc != 0:
+        raise RuntimeError(err.strip())
+    return json.loads(out.strip())
 
 
 @app.get("/health")
@@ -87,6 +154,76 @@ JSON.stringify(result);
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/omnifocus/task/{task_id}")
+def omnifocus_task_get(task_id: str):
+    """Fetch konkrétní OF task podle ID. Pro threading TG flow (sekce 8 spec):
+    když přijde nový email v threadu s of_task_id → bot zobrazí "Update existující
+    OF task X" + tlačítka [Otevřít OF / Append do notes / Nový task / Skip]."""
+    tid_js = json.dumps(task_id)
+    script = f"""
+const of2 = Application('OmniFocus');
+const doc = of2.defaultDocument;
+let task;
+try {{
+  task = doc.flattenedTasks.whose({{id: {tid_js}}})[0];
+  if (!task) throw new Error('not_found');
+  const props = {{
+    id: task.id(),
+    name: task.name(),
+    note: task.note() || '',
+    completed: task.completed(),
+    flagged: task.flagged(),
+    in_inbox: task.inInbox(),
+    due_at:    task.dueDate()    ? task.dueDate().toISOString()    : null,
+    defer_at:  task.deferDate()  ? task.deferDate().toISOString()  : null,
+    modified_at: task.modificationDate() ? task.modificationDate().toISOString() : null,
+  }};
+  JSON.stringify({{ok: true, task: props}});
+}} catch (e) {{
+  JSON.stringify({{ok: false, error: String(e.message || e), task_id: {tid_js}}});
+}}
+"""
+    try:
+        return run_jxa(script, timeout=15)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/omnifocus/task/{task_id}/append_note")
+def omnifocus_task_append_note(task_id: str, body: dict):
+    """Přidá řádek/blok textu k existující OF task notes.
+
+    Použití: nový email v threadu s of_task_id → Pavel klikne "📎 Append do notes"
+    → bot zavolá tento endpoint s text (subject + sender + krátký excerpt nového
+    emailu), Pavel pak v OF vidí all updates v notes původního tasku.
+
+    Body:
+      text: str         — text k apendování (může obsahovat newlines)
+      separator: str    — co vložit před text (default '\\n\\n────\\n')
+    """
+    tid_js = json.dumps(task_id)
+    text = body.get("text", "") or ""
+    separator = body.get("separator", "\n\n────\n")
+    full_text_js = json.dumps(separator + text)
+    script = f"""
+const of2 = Application('OmniFocus');
+const doc = of2.defaultDocument;
+try {{
+  const task = doc.flattenedTasks.whose({{id: {tid_js}}})[0];
+  if (!task) throw new Error('task not found: ' + {tid_js});
+  const oldNote = task.note() || '';
+  task.note = oldNote + {full_text_js};
+  JSON.stringify({{ok: true, task_id: task.id(), new_length: task.note().length}});
+}} catch (e) {{
+  JSON.stringify({{ok: false, error: String(e.message || e)}});
+}}
+"""
+    try:
+        return run_jxa(script, timeout=15)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/omnifocus/projects")
 def omnifocus_projects():
     """Vrátí seznam projektů s jejich stavy."""
@@ -123,7 +260,9 @@ JSON.stringify(result);
 
 @app.post("/reminders/add")
 def reminders_add(body: dict):
-    """Přidá reminder do Apple Reminders (výchozí seznam)."""
+    """Přidá reminder do Apple Reminders (výchozí seznam).
+    Vrací: {ok, name, id} — id potřebujeme pro budoucí undo (DELETE /reminders/{id}).
+    """
     name         = body.get("name", "") or ""
     reminder_body = body.get("body", "") or ""
     list_name    = body.get("list", "Reminders")
@@ -137,11 +276,115 @@ const lists = rm.lists.whose({{name: {list_js}}})();
 const lst = lists.length > 0 ? lists[0] : rm.lists[0];
 const r = rm.Reminder({{name: {name_js}, body: {body_js}}});
 lst.reminders.push(r);
-JSON.stringify({{ok: true, name: {name_js}}});
+const rid = r.id();
+JSON.stringify({{ok: true, name: {name_js}, id: rid}});
 """
     try:
         result = run_jxa(script)
-        return {"ok": True, "name": name}
+        rid = result.get("id") if isinstance(result, dict) else None
+        return {"ok": True, "name": name, "id": rid}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/reminders/{reminder_id}")
+def reminders_delete(reminder_id: str):
+    """M2 undo: smaže reminder podle id (vrácený z /reminders/add)."""
+    rid_js = json.dumps(reminder_id)
+    script = f"""
+const rm = Application('Reminders');
+try {{
+  const rems = rm.reminders.whose({{id: {rid_js}}})();
+  if (rems.length === 0) {{
+    JSON.stringify({{ok: false, error: 'reminder_not_found'}});
+  }} else {{
+    rm.delete(rems[0]);
+    JSON.stringify({{ok: true, deleted: {rid_js}}});
+  }}
+}} catch(e) {{
+  JSON.stringify({{ok: false, error: e.toString()}});
+}}
+"""
+    try:
+        result = run_jxa(script)
+        if isinstance(result, dict) and not result.get("ok"):
+            raise HTTPException(status_code=404, detail=result.get("error", "reminder delete failed"))
+        return result if isinstance(result, dict) else {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/notes/{note_id}")
+def notes_get(note_id: str):
+    """Fetch konkrétní Apple Notes note podle id. Pro threading TG flow:
+    když přijde nový email v threadu s asociovaným note, bot si ho dotahá
+    a může zobrazit v TG nebo append text."""
+    nid_js = json.dumps(note_id)
+    script = f"""
+const notes = Application('Notes');
+try {{
+  const n = notes.notes.whose({{id: {nid_js}}})[0];
+  if (!n) throw new Error('not_found');
+  const props = {{
+    id: n.id(),
+    name: n.name() || '',
+    body: n.body() || '',
+    creation_date:     n.creationDate()     ? n.creationDate().toISOString()     : null,
+    modification_date: n.modificationDate() ? n.modificationDate().toISOString() : null,
+  }};
+  JSON.stringify({{ok: true, note: props}});
+}} catch (e) {{
+  JSON.stringify({{ok: false, error: String(e.message || e), note_id: {nid_js}}});
+}}
+"""
+    try:
+        return run_jxa(script, timeout=15)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/notes/{note_id}/append")
+def notes_append(note_id: str, body: dict):
+    """Přidá HTML/text k existující Apple Notes note.
+
+    Apple Notes ukládá body jako HTML (nikoli plain text). Pro Apple-friendly
+    append vložíme oddělovací <hr/> a text obalený v <div>. Pavel pak v Notes
+    vidí klasický horizontal rule + nový blok.
+
+    Body:
+      text: str       — text k apendování (HTML escape se aplikuje, znaky < > &)
+      separator: bool — zda vložit <hr/> před text (default: True)
+    """
+    text = body.get("text", "") or ""
+    use_sep = body.get("separator", True)
+
+    # HTML escape — Apple Notes tolerantně přijme plain text v body, ale safe je escape
+    safe_text = (text.replace("&", "&amp;")
+                     .replace("<", "&lt;")
+                     .replace(">", "&gt;"))
+    safe_text_html = safe_text.replace("\n", "<br/>")
+
+    sep_html = "<hr/>" if use_sep else ""
+    append_html = f'{sep_html}<div>{safe_text_html}</div>'
+
+    nid_js = json.dumps(note_id)
+    append_js = json.dumps(append_html)
+    script = f"""
+const notes = Application('Notes');
+try {{
+  const n = notes.notes.whose({{id: {nid_js}}})[0];
+  if (!n) throw new Error('note not found: ' + {nid_js});
+  const oldBody = n.body() || '';
+  n.body = oldBody + {append_js};
+  JSON.stringify({{ok: true, note_id: n.id(), new_length: n.body().length}});
+}} catch (e) {{
+  JSON.stringify({{ok: false, error: String(e.message || e)}});
+}}
+"""
+    try:
+        return run_jxa(script, timeout=15)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -361,15 +604,20 @@ def omnifocus_add_task(body: dict):
 
     name_js = json.dumps(name)
     note_js = json.dumps(note)
+    # H2: vrátit task.id() — potřebné pro persistenci of_task_id
+    # v email_messages → threading detekce při replies.
     create_script = f"""
 const of2 = Application('OmniFocus');
 const doc = of2.defaultDocument;
 const task = of2.Task({{name: {name_js}, note: {note_js}, flagged: {flagged}}});
 doc.inboxTasks.push(task);
-JSON.stringify({{ok: true, name: {name_js}}});
+JSON.stringify({{ok: true, name: {name_js}, task_id: task.id()}});
 """
+    created_task_id = None
     try:
-        run_jxa(create_script)
+        result = run_jxa(create_script)
+        if isinstance(result, dict):
+            created_task_id = result.get("task_id")
     except HTTPException:
         raise
     except Exception as e:
@@ -397,6 +645,7 @@ JSON.stringify({{ok: true, name: {name_js}}});
     return {
         "ok": True,
         "name": name,
+        "task_id": created_task_id,
         "attachments_saved": len(saved_paths),
         "attachments_attached": attached_count,
         "attach_method": attach_method,
@@ -516,68 +765,244 @@ JSON.stringify(result);
 
 @app.get("/contacts/all")
 def contacts_all():
-    """Vrátí kontakty přímo ze sqlite databáze Contacts (rychlé)."""
-    # Preferuj source databázi (iCloud sync), fallback na hlavní
-    src_base = os.path.expanduser("~/Library/Application Support/AddressBook/Sources")
-    db_path = None
-    if os.path.exists(src_base):
-        for d in os.listdir(src_base):
-            candidate = os.path.join(src_base, d, "AddressBook-v22.abcddb")
-            if os.path.exists(candidate):
-                db_path = candidate
-                break
-    if not db_path:
-        db_path = os.path.expanduser(
-            "~/Library/Application Support/AddressBook/AddressBook-v22.abcddb"
-        )
+    """Vrátí kontakty + jejich skupiny přes JXA volání Contacts.app.
+
+    Proč JXA a ne sqlite3 přímo?
+    macOS launchd-spawned procesy nedědí Full Disk Access (na rozdíl od
+    Terminal-spawned). Sqlite3 read DB v ~/Library/Application Support/
+    AddressBook/ vyžaduje FDA → padá s PermissionError pro Bridge.
+    JXA `Application('Contacts')` používá AppleEvents (= "Automation"
+    permission), kterou Bridge má (stejná cesta funguje pro OmniFocus,
+    Notes, Calendar, Reminders).
+
+    Při prvním volání macOS vyhodí dialog "Apple Bridge requests Contacts
+    access" — uživatel klikne Allow → funguje dál bez ptaní.
+    """
+    # JXA — skupiny + per-kontakt emails/phones (label+value).
+    # Per-kontakt JXA call ~187 ms × 1180 kontaktů ≈ 230 s + overhead.
+    # Timeout 600 s = ~2.6× rezerva.
+    # Důvod načítat emails/phones zde (a ne nechávat na sqlite ingest):
+    # launchd-spawned Bridge nemá Full Disk Access → sqlite read padá.
+    script = r'''
+const contacts = Application('Contacts');
+contacts.includeStandardAdditions = false;
+
+const groupMap = {};
+const groups = contacts.groups();
+for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    let gname;
+    try { gname = g.name(); } catch (e) { continue; }
+    if (!gname) continue;
+    let memIds;
+    try { memIds = g.people().map(p => p.id()); } catch (e) { continue; }
+    for (let j = 0; j < memIds.length; j++) {
+        const pid = memIds[j];
+        if (!groupMap[pid]) groupMap[pid] = [];
+        groupMap[pid].push(gname);
+    }
+}
+
+function safeList(getter) {
+    let arr = [];
+    try { arr = getter(); } catch (e) { return []; }
+    const out = [];
+    for (let k = 0; k < arr.length; k++) {
+        const item = arr[k];
+        let lbl = null, val = null;
+        try { lbl = item.label() || null; } catch (e) {}
+        try { val = item.value() || null; } catch (e) {}
+        if (val) out.push({label: lbl, value: val});
+    }
+    return out;
+}
+
+const result = [];
+const people = contacts.people();
+for (let i = 0; i < people.length; i++) {
+    const p = people[i];
+    let pid;
+    try { pid = p.id(); } catch (e) { continue; }
+    let first = null, last = null, org = null;
+    try { first = p.firstName() || null; } catch (e) {}
+    try { last = p.lastName() || null; } catch (e) {}
+    try { org = p.organization() || null; } catch (e) {}
+    const emails = safeList(() => p.emails());
+    const phones = safeList(() => p.phones());
+    result.push({
+        id: pid,
+        first: first,
+        last: last,
+        org: org,
+        modified_at: null,
+        emails: emails,
+        phones: phones,
+        groups: groupMap[pid] || [],
+    });
+}
+JSON.stringify(result);
+'''
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        cur = conn.cursor()
-        # Základní info o osobách
-        cur.execute("""
-            SELECT r.ZUNIQUEID, r.ZFIRSTNAME, r.ZLASTNAME, r.ZORGANIZATION, r.ZMODIFICATIONDATE
-            FROM ZABCDRECORD r
-            WHERE r.ZUNIQUEID LIKE '%:ABPerson'
-        """)
-        people = {row[0]: {"id": row[0], "first": row[1], "last": row[2],
-                            "org": row[3], "modified_at": row[4],
-                            "emails": [], "phones": []}
-                  for row in cur.fetchall()}
-        # Emaily
-        cur.execute("""
-            SELECT r.ZUNIQUEID, e.ZLABEL, e.ZADDRESS
-            FROM ZABCDEMAILADDRESS e
-            JOIN ZABCDRECORD r ON e.ZOWNER = r.Z_PK
-            WHERE r.ZUNIQUEID LIKE '%:ABPerson'
-        """)
-        for uid, label, addr in cur.fetchall():
-            if uid in people and addr:
-                people[uid]["emails"].append({"label": label or "", "value": addr})
-        # Telefony
-        cur.execute("""
-            SELECT r.ZUNIQUEID, p.ZLABEL, p.ZFULLNUMBER
-            FROM ZABCDPHONENUMBER p
-            JOIN ZABCDRECORD r ON p.ZOWNER = r.Z_PK
-            WHERE r.ZUNIQUEID LIKE '%:ABPerson'
-        """)
-        for uid, label, num in cur.fetchall():
-            if uid in people and num:
-                people[uid]["phones"].append({"label": label or "", "value": num})
-        conn.close()
-        # Převod Mac Core Data timestamp (sekund od 2001-01-01) na ISO
-        epoch = datetime(2001, 1, 1, tzinfo=timezone.utc)
-        result = []
-        for p in people.values():
-            mod = None
-            if p["modified_at"]:
-                try:
-                    mod = (epoch + timedelta(seconds=p["modified_at"])).isoformat()
-                except Exception:
-                    pass
-            result.append({**p, "modified_at": mod})
-        return {"ok": True, "count": len(result), "contacts": result}
+        contacts_data = run_jxa(script, timeout=600)
+        if not isinstance(contacts_data, list):
+            return JSONResponse({
+                "ok": False, "error": "jxa_unexpected_type",
+                "message": f"JXA vrátilo {type(contacts_data).__name__}, čekal jsem list",
+                "count": 0, "contacts": [],
+            })
+        return {"ok": True, "count": len(contacts_data), "contacts": contacts_data}
+    except RuntimeError as e:
+        msg = str(e)
+        # "Not authorised to send Apple events" = Pavel ještě nedovolil
+        if "authoris" in msg.lower() or "1743" in msg or "permission" in msg.lower():
+            return JSONResponse({
+                "ok": False, "error": "no_automation_permission",
+                "message": "Bridge nemá AppleEvents permission pro Contacts. Při prvním volání macOS dialog → Allow. Pokud byl odmítnut: System Settings → Privacy & Security → Automation → Apple Bridge → zaškrtni Contacts.",
+                "count": 0, "contacts": [],
+            })
+        raise HTTPException(status_code=500, detail=msg)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/contacts/all_sqlite")
+def contacts_all_sqlite():
+    """LEGACY/FALLBACK: agreguje kontakty ze sqlite DB přímo.
+
+    Vyžaduje Full Disk Access (Bridge launchd typicky nedostává) →
+    vrací 200 s error='no_fda' pokud DB nedostupná. Ponecháno pro
+    případ, že FDA bude později fungovat (proper signed app bundle).
+    """
+    base = os.path.expanduser("~/Library/Application Support/AddressBook")
+    db_paths: list[str] = []
+    try:
+        # Top-level DB
+        top = os.path.join(base, "AddressBook-v22.abcddb")
+        if os.path.exists(top):
+            db_paths.append(top)
+        # Per-account DB v Sources/<UUID>/
+        sources = os.path.join(base, "Sources")
+        if os.path.exists(sources):
+            for d in os.listdir(sources):
+                candidate = os.path.join(sources, d, "AddressBook-v22.abcddb")
+                if os.path.exists(candidate):
+                    db_paths.append(candidate)
+    except PermissionError:
+        return JSONResponse({
+            "ok": False, "error": "no_fda",
+            "message": "Bridge nemá Full Disk Access — System Settings → Privacy & Security → Full Disk Access → přidat Python.app a restart Bridge.",
+            "count": 0, "contacts": [], "db_count": 0,
+        })
+
+    if not db_paths:
+        return JSONResponse({
+            "ok": False, "error": "no_db",
+            "message": f"Žádná AddressBook DB v {base}",
+            "count": 0, "contacts": [], "db_count": 0,
+        })
+
+    people: dict[str, dict] = {}
+    db_stats: list[dict] = []
+
+    for db_path in db_paths:
+        local_pk_to_uid: dict[int, str] = {}  # per-DB mapping pro skupiny
+        added = 0
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            cur = conn.cursor()
+        except (sqlite3.OperationalError, PermissionError):
+            db_stats.append({"path": db_path, "error": "open_failed"})
+            continue
+
+        # Osoby
+        try:
+            cur.execute("""
+                SELECT r.Z_PK, r.ZUNIQUEID, r.ZFIRSTNAME, r.ZLASTNAME,
+                       r.ZORGANIZATION, r.ZMODIFICATIONDATE
+                FROM ZABCDRECORD r
+                WHERE r.ZUNIQUEID LIKE '%:ABPerson'
+            """)
+            for pk, uid, first, last, org, modified in cur.fetchall():
+                local_pk_to_uid[pk] = uid
+                if uid not in people:
+                    people[uid] = {"id": uid, "first": first, "last": last,
+                                   "org": org, "modified_at": modified,
+                                   "emails": [], "phones": [], "groups": []}
+                    added += 1
+        except sqlite3.OperationalError:
+            conn.close()
+            db_stats.append({"path": db_path, "error": "no_ZABCDRECORD"})
+            continue
+
+        # Emaily (s deduplikací napříč DB)
+        try:
+            cur.execute("""
+                SELECT r.ZUNIQUEID, e.ZLABEL, e.ZADDRESS
+                FROM ZABCDEMAILADDRESS e
+                JOIN ZABCDRECORD r ON e.ZOWNER = r.Z_PK
+                WHERE r.ZUNIQUEID LIKE '%:ABPerson'
+            """)
+            for uid, label, addr in cur.fetchall():
+                if uid in people and addr:
+                    if not any(e["value"] == addr for e in people[uid]["emails"]):
+                        people[uid]["emails"].append({"label": label or "", "value": addr})
+        except sqlite3.OperationalError:
+            pass
+
+        # Telefony
+        try:
+            cur.execute("""
+                SELECT r.ZUNIQUEID, p.ZLABEL, p.ZFULLNUMBER
+                FROM ZABCDPHONENUMBER p
+                JOIN ZABCDRECORD r ON p.ZOWNER = r.Z_PK
+                WHERE r.ZUNIQUEID LIKE '%:ABPerson'
+            """)
+            for uid, label, num in cur.fetchall():
+                if uid in people and num:
+                    if not any(p["value"] == num for p in people[uid]["phones"]):
+                        people[uid]["phones"].append({"label": label or "", "value": num})
+        except sqlite3.OperationalError:
+            pass
+
+        # Skupiny — mapping Z_22PARENTGROUPS je per-DB (PK jsou interní)
+        try:
+            cur.execute("""
+                SELECT m.Z_22CONTACTS, g.ZNAME
+                FROM Z_22PARENTGROUPS m
+                JOIN ZABCDRECORD g ON g.Z_PK = m.Z_19PARENTGROUPS1
+                WHERE g.ZUNIQUEID LIKE '%:ABGroup' AND g.ZNAME IS NOT NULL
+            """)
+            for contact_pk, group_name in cur.fetchall():
+                uid = local_pk_to_uid.get(contact_pk)
+                if uid and uid in people:
+                    if group_name not in people[uid]["groups"]:
+                        people[uid]["groups"].append(group_name)
+        except sqlite3.OperationalError:
+            # Z_22PARENTGROUPS nemusí v každé DB existovat
+            pass
+
+        conn.close()
+        db_stats.append({"path": db_path, "added": added})
+
+    # Convert Mac Core Data timestamp na ISO
+    epoch = datetime(2001, 1, 1, tzinfo=timezone.utc)
+    result = []
+    for p in people.values():
+        mod = None
+        if p["modified_at"]:
+            try:
+                mod = (epoch + timedelta(seconds=p["modified_at"])).isoformat()
+            except Exception:
+                pass
+        result.append({**p, "modified_at": mod})
+
+    return {
+        "ok": True,
+        "count": len(result),
+        "contacts": result,
+        "db_count": len(db_paths),
+        "db_stats": db_stats,
+    }
 
 
 def _dt_to_iso(dt) -> str | None:
@@ -705,7 +1130,66 @@ def calendar_add(body: dict):
             raise HTTPException(status_code=500, detail="Žádný kalendář nenalezen")
 
         target.save_event(ical_bytes)
-        return {"ok": True, "calendar": cal_name, "name": name}
+        # M2 undo: vrátit UID — undo pak smaže event přes DELETE /calendar/{uid}
+        event_uid = str(ev.get("uid"))
+        return {"ok": True, "calendar": cal_name, "name": name, "id": event_uid}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/calendar/{event_uid}")
+def calendar_delete(event_uid: str):
+    """M2 undo: smaže event z iCloud Calendar přes CalDAV podle UID
+    (vrácený z /calendar/add). Hledá ve všech kalendářích — UID je globálně unikátní."""
+    try:
+        client = caldav.DAVClient(url=CALDAV_URL, username=CALDAV_USER, password=CALDAV_PASS)
+        principal = client.principal()
+        for c in principal.calendars():
+            try:
+                ev = c.event_by_uid(event_uid)
+                ev.delete()
+                return {"ok": True, "deleted": event_uid, "calendar": c.get_display_name()}
+            except Exception:
+                continue
+        raise HTTPException(status_code=404, detail=f"Event UID '{event_uid}' nenalezen v žádném kalendáři")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/omnifocus/task/{task_id}")
+def omnifocus_task_delete(task_id: str):
+    """M2 undo: smaže OmniFocus task podle id (vrácený z /omnifocus/add_task).
+    Pokud delete selže (TCC, JXA limitation), fallback na markComplete."""
+    tid_js = json.dumps(task_id)
+    script = f"""
+const of = Application('OmniFocus');
+const doc = of.defaultDocument;
+try {{
+  const tasks = doc.flattenedTasks.whose({{id: {tid_js}}})();
+  if (tasks.length === 0) {{
+    JSON.stringify({{ok: false, error: 'task_not_found'}});
+  }} else {{
+    try {{
+      of.delete(tasks[0]);
+      JSON.stringify({{ok: true, deleted: {tid_js}, method: 'delete'}});
+    }} catch(de) {{
+      tasks[0].markComplete();
+      JSON.stringify({{ok: true, deleted: {tid_js}, method: 'markComplete', delete_error: de.toString()}});
+    }}
+  }}
+}} catch(e) {{
+  JSON.stringify({{ok: false, error: e.toString()}});
+}}
+"""
+    try:
+        result = run_jxa(script)
+        if isinstance(result, dict) and not result.get("ok"):
+            raise HTTPException(status_code=404, detail=result.get("error", "OF task delete failed"))
+        return result if isinstance(result, dict) else {"ok": True}
     except HTTPException:
         raise
     except Exception as e:

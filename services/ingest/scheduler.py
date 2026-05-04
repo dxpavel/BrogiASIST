@@ -132,11 +132,17 @@ if __name__ == "__main__":
     now_tz = datetime.now(tz=timezone.utc)
     scheduler.add_job(ingest_notes,     "interval", minutes=30, id="notes",      next_run_time=now_tz)
     scheduler.add_job(ingest_reminders, "interval", minutes=15, id="reminders",  next_run_time=now_tz)
-    scheduler.add_job(ingest_contacts,  "interval", hours=6,    id="contacts",   next_run_time=now_tz)
+    scheduler.add_job(ingest_contacts,  "interval", hours=12,   id="contacts",   next_run_time=now_tz)
     scheduler.add_job(ingest_calendar,       "interval", minutes=15, id="calendar",  next_run_time=now_tz)
     scheduler.add_job(classify_new_emails,      "interval", minutes=5,  id="classify",  next_run_time=now_tz)
     scheduler.add_job(notify_classified_emails, "interval", minutes=2,  id="notify",    next_run_time=now_tz)
     scheduler.add_job(job_imap_login_check,     "interval", minutes=5,  id="imap_login", next_run_time=now_tz)
+
+    # Pending actions queue worker — drain každou minutu (spec D5).
+    # Apple Bridge offline → akce v pending_actions, worker je dorovná.
+    from pending_worker import drain_queue
+    scheduler.add_job(drain_queue, "interval", minutes=1, id="drain_queue", next_run_time=now_tz)
+
     scheduler.start()
 
     log.info("RSS/30min, YouTube/2h, OmniFocus/10min, Notes/30min, Reminders/15min, Contacts/6h, Calendar/15min — běží")
