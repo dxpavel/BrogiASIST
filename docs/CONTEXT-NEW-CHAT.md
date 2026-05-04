@@ -1,8 +1,8 @@
 ---
 Název: CONTEXT-NEW-CHAT
 Soubor: docs/CONTEXT-NEW-CHAT.md
-Verze: 8.1 (v2.0 tag, M5-s2 + BUG-001 + L1/L2 deployed)
-Poslední aktualizace: 2026-05-04 (pozdní večer)
+Verze: 8.2 (v2.0 + BUG-004/005/006 FIXED + BUG-010 prep)
+Poslední aktualizace: 2026-05-04 (noční)
 Popis: Kontext pro nový chat — stav, cesty, problémy
 ---
 
@@ -33,6 +33,12 @@ Popis: Kontext pro nový chat — stav, cesty, problémy
 - **L1** Email Semantics v1 status (NOVÝ/ZPRACOVANÝ/SMAZANÝ + migrace 018)
 - **L2** smazat sqlite contacts endpoint v Bridge
 - **Migrace 017** ai_source + **018** status_semantics na PROD
+
+**Night:**
+- **BUG-004/005** FIXED — per-host BrogiASIST path + `_uid_move` raise
+- **BUG-006** FIXED — audit 34 PROD emailů, 32 flagged `imap_lost=TRUE`
+- **BUG-010 prep** — `X-Brogi-Auto` header v ingest, full M1 v další session
+- **Migrace 019** `imap_lost`
 
 ## Příští session = M5 session 2 (Llama refinement)
 

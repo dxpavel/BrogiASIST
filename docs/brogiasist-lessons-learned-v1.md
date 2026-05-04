@@ -1417,6 +1417,44 @@ Bonus: SQL migrace **idempotentní** + `IF NOT IN (...)` fallback safeguard
 
 ---
 
+## 52. psycopg2 placeholder `%s` vs SQL LIKE `%pattern%` kolize (2026-05-04, BUG-006 audit)
+
+**Problém:** Audit script `audit_brogi_lost.py` při prvním spuštění:
+```
+[ERROR] pavel@dxpsolutions.cz audit failed: tuple index out of range
+```
+Žádný DB query nezavolán, žádný IMAP connect. 4 ms po startu funkce.
+
+**Příčina:** SQL query:
+```python
+cur.execute("""
+    SELECT ... FROM email_messages
+    WHERE folder LIKE 'BrogiASIST/%'
+      AND mailbox = %s
+""", (mailbox,))
+```
+psycopg2 vidí `%s`, `%`, `%s` jako **3 placeholders**, ale `(mailbox,)`
+poskytuje jen **1 parameter** → `IndexError: tuple index out of range`
+hluboko v parametr-binding logice. Klasická nástraha kdykoli má SQL
+literal s `%` (LIKE pattern, jsonb path, regex).
+
+**Fix:** Escape `%` → `%%` v string literalu:
+```python
+WHERE folder LIKE 'BrogiASIST/%%'
+```
+
+**Pravidlo:** V psycopg2 (a podobně mysql.connector, sqlite3 v "qmark"
+módu po `paramstyle=...`) **VŽDY escape `%` → `%%`** pokud SQL obsahuje
+literal `%` v stringu. Týká se:
+- `LIKE '%foo%'` → `LIKE '%%foo%%'`
+- `~ '\d+%'` regex → `~ '\d+%%'`
+- jsonb cesty které náhodně obsahují `%`
+
+Sniff test po napsání SQL s parametry: spočítej `%s` vs `%[^s]` a ujisti se,
+že parametry odpovídají počtu `%s`.
+
+---
+
 ## Co ještě nebylo řešeno / TODO
 
 - **iMessage ingest** — bridge endpoint naplánován, ingest skript a DB tabulka chybí

@@ -14,6 +14,35 @@ Popis: Handoff pro pokračování blockeru D z branch `2`.
 
 # BrogiASIST — Session Handoff (D continuation, v2.0)
 
+## ⚠️ UPDATE 2026-05-04 (noční, ~19:00) — BUG-004/005/006 cleanup + BUG-010 prep
+
+**HOTOVO:**
+- **BUG-004** FIXED — per-host `_brogi_path()` v `imap_actions.py` (Forpsi/Synology
+  `INBOX.BrogiASIST.X` vs Gmail/iCloud/Seznam `BrogiASIST/X`) + `_folder_exists()`
+  pre-flight check (commit 54a974f)
+- **BUG-005** FIXED — `_uid_move` raise při fail (žádný silent fallthrough),
+  DB se neupdatuje pokud IMAP move selhal (commit 54a974f)
+- **BUG-006** FIXED — audit script `audit_brogi_lost.py` projel 34 PROD emailů:
+  **32 LOST → flag `imap_lost=TRUE`**, **1 FOUND** (postapro v INBOX.Trash),
+  **1 no_message_id**. Migrace 019. (commit 7a55330+430f82a)
+- **BUG-010 prep** — ingest extrakce `X-Brogi-Auto` headeru → decision_rules
+  `self_sent` rule (priority 5, už enabled) skipne klasifikaci. Připraveno
+  na budoucí M1 SMTP impl. (commit 3304f93)
+
+**Lekce #52** psycopg2 `%` v SQL LIKE → `%%` (audit script tuple index error).
+
+**PROD stav:**
+- branch `2`, last commit `3304f93`
+- Migrace **016, 017, 018, 019** aplikované
+- 32 emailů flagged `imap_lost=TRUE` (datový dluh transparent v UI)
+- Apple Bridge 1069 ř. (sqlite contacts removed)
+
+**Jediný OPEN bug:** **BUG-010** — full M1 (`/mail/send` + `/calendar/reply`
+přes SMTP, IMAP filter na sent folder s X-Brogi-Auto detection) zůstává
+na samostatnou session ~3h.
+
+---
+
 ## ⚠️ UPDATE 2026-05-04 (pozdní večer) — v2.0 tag + M5-s2 + BUG-001 + L1/L2
 
 **HOTOVO** v této pokračovací mini-session:
