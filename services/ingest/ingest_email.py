@@ -250,6 +250,9 @@ def fetch_messages(account: dict, since: datetime) -> list[dict]:
                 "Reply-To":         _hdr("Reply-To"),
                 "Return-Path":      _hdr("Return-Path"),
                 "X-Mailer":         _hdr("X-Mailer"),
+                # M1: bot vlastní reply marker (decision_rules `self_sent` rule
+                # priority 5 → skip klasifikace pokud header existuje)
+                "X-Brogi-Auto":     _hdr("X-Brogi-Auto"),
             }
 
             # Pro threading (blocker D1): extrahovat z headers do top-level
