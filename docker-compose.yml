@@ -75,6 +75,8 @@ services:
       INGEST_URL: http://scheduler:9001
     ports:
       - "9000:9000"
+    volumes:
+      - ./VERSION:/app/VERSION:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -15,6 +15,26 @@ app = FastAPI(title="BrogiASIST Dashboard")
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
+# Verze systému — load z VERSION souboru v repo rootu (single source of truth)
+def _load_version() -> str:
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "../../VERSION"),
+        "/app/VERSION",
+        os.path.join(os.path.dirname(__file__), "VERSION"),
+    ]
+    for path in candidates:
+        try:
+            with open(path) as f:
+                v = f.read().strip()
+                if v:
+                    return v
+        except (OSError, IOError):
+            continue
+    return "?"
+
+APP_VERSION = _load_version()
+templates.env.globals["app_version"] = APP_VERSION
+
 DB_CONFIG = {
     "host": os.getenv("POSTGRES_HOST", "localhost"),
     "port": int(os.getenv("POSTGRES_PORT", "5433")),
