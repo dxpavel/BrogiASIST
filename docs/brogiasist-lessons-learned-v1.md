@@ -1220,6 +1220,115 @@ Apple iCloud IMAP server má **liberálnější interpretaci RFC 3501** — při
 
 ---
 
+## 45. Llama numeric output sanitize — placeholder strings v float fields (2026-05-04, BUG-013)
+
+**Problém:** Po týdnech bezproblémového běhu se objevila výjimka:
+`[ERROR] classify <id>: could not convert string to float: '<0.0-1.0>'`
+Postihl 1 email ze ~50, klasifikace selhala (status zůstal 'new', žádná TG notif).
+
+**Příčina:** Llama 3.2 občas (≈1×/den) **echo-uje doslova** placeholder
+z prompt template místo aby dal hodnotu. Existující sanitize logika v
+`classify_emails.py` řešila `typ` (whitelist `_VALID_TYP`) a `task_status`
+(whitelist `_VALID_TASK_STATUS`), ale **`confidence` chybělo**.
+Stejný anti-pattern jako lekce #42, jen pro číselný field.
+
+**Fix (commit `b8e88a9`):**
+```python
+raw_confidence = result.get("confidence", 0.5)
+try:
+    confidence = float(raw_confidence)
+    if not (0.0 <= confidence <= 1.0):
+        raise ValueError(f"out of range: {confidence}")
+except (TypeError, ValueError) as e:
+    log.warning(f"Llama vrátila invalid confidence={raw_confidence!r}, fallback 0.5: {e}")
+    confidence = 0.5
+```
+
+**Pravidlo:** Všechna **numerická pole** z LLM API vyžadují
+`try/except float()` + range check + fallback default. Stejně jako enum
+pole vyžadují whitelist (lekce #42), numerická pole vyžadují range guard.
+
+---
+
+## 46. IMAP MOVE mění UID v cílové složce — mark_read po move selže (2026-05-04, BUG-014)
+
+**Problém:** PROD log spamoval každou `2del`/`2spam` akci na Gmail/Synology:
+```
+[INFO] move_to_trash OK: dxpavel@gmail.com uid=114152 → [Gmail]/Trash
+[ERROR] mark_read dxpavel@gmail.com uid=114152: command STORE illegal in state AUTH
+```
+Funkčně OK (`_update_db_folder` už nastavil is_read=TRUE), ale ERROR v logu
+zatemňoval skutečné errory.
+
+**Příčina:** Po IMAP MOVE má email v cílové složce **jiný UID**
+(UIDVALIDITY se mění mezi folders v Gmail/Cyrus IMAP). `_mark_read_after_action`
+pak volá `mark_read(email_id)` který načte z DB `(mailbox, uid=114152, folder=[Gmail]/Trash)`
+— **uid 114152 v Trashi neexistuje**, jen v INBOXu kde už není. Plus
+`m.select()` návrat se nekontroloval — pokud SELECT selže, spojení zůstane
+ve stavu AUTH a STORE pak vyhodí "illegal in state AUTH".
+
+**Fix (commit `e5df8a7`, dvouvrstvý):**
+- **A)** `action_done()`: skip `mark_read` pokud folder obsahuje
+  trash/deleted/spam/junk (root cause — práce už hotová z `_update_db_folder`)
+- **B)** `mark_read()`: check návratu `m.select()` = "OK" před STORE
+  (defensive pro budoucí případy)
+
+**Pravidlo:** Po IMAP MOVE **nepředpokládej UID kontinuity** v cílové
+složce. Vždy kontroluj návrat `m.select()` před STORE/FETCH operacemi.
+
+---
+
+## 47. Implementuj reverze PŘED implementací akce — Bridge endpoint audit (2026-05-04, M2)
+
+**Problém:** M2 (2undo TTL 1h) jsem nejprve implementoval s reverzemi pro
+všech 8 reverzibilních akcí (`hotovo/precteno/ceka/spam/del/of/rem/cal`).
+Až po napsání kódu jsem zkontroloval Apple Bridge endpointy — a zjistil:
+`/omnifocus/task/{id}/delete`, `/reminders/{id}/delete`, `/calendar/{id}/delete`
+**neexistovaly**. Pavel by tedy klikl "↶ Vrátit" → Bridge 404 → DB by se
+resetovala, ale OF task / REM / CAL záznam by zůstal jako orphan.
+
+**Příčina:** Předpokládal jsem že Bridge má symetrické CRUD operace bez
+ověření. Bridge měl `add_task` / `add_reminder` / `add_event` ale žádné
+`delete_*`.
+
+**Fix (commit `d19ca0d`):** Přidány 3 nové DELETE endpointy v Bridge
++ `/reminders/add` a `/calendar/add` rozšířeny o `id` v response.
+Scheduler zachytí ID a uloží do `email_messages.{rem,cal}_event_id`.
+
+**Pravidlo:** Před implementací **reverze / undo / cleanup logiky** pro
+feature X **nejprve audituj všechny závislé endpointy/funkce** že existují.
+Pokud ne → buď je doplň ve stejné session, nebo redukuj scope MVP.
+Hotový kód co volá neexistující endpoint = orphan / data inconsistency.
+
+---
+
+## 48. AI cascade design — spec před implementací zachrání čas (2026-05-04, M5)
+
+**Problém:** Pavel chtěl rozšířit decision_rules o subject/body keyword
+matching. V průběhu debaty se to vyvinulo na "Claude verifikuje TYP +
+topics + suggested_action + ✓ Potvrdit button" = 6-vrstvý cascade s
+~6h implementací. Pokušení nacpat to vše do jedné session bylo silné.
+
+**Místo toho:** Vytvořeno **422-řádkový spec** `docs/feature-specs/FEATURE-AI-CASCADE-v1.md`
+s rozdělením do 2 sessions (Llama + Claude), všechna rozhodnutí (threshold,
+prompt, storage, UI flow, učení dual-track) zaznamenána před implementací.
+Subject/body keyword (z Llama session) **předtaženo** do aktuální session
+jako M5-pre, ostatní odloženo.
+
+**Pravidlo:** Pro multi-vrstvé features (cascading AI, layered decision)
+vyrob **spec dokument PŘED kódováním**:
+- architektura + diagram
+- JSON schema/return contracts
+- storage decisions
+- UI flow
+- rozhodovací matrix (thresholds, fallbacks)
+- rizika + mitigace
+- implementační kroky per session (s odhady)
+
+Spec je levný (1h), záchrana před chaotickým kódem (3h zpětně) je velká.
+
+---
+
 ## Co ještě nebylo řešeno / TODO
 
 - **iMessage ingest** — bridge endpoint naplánován, ingest skript a DB tabulka chybí

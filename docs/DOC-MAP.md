@@ -61,6 +61,7 @@ Pravidlo: Každý dokument v `docs/` musí být v této mapě. Pokud tu není, n
 | Soubor | Popis | Stav |
 |---|---|---|
 | `feature-specs/FEATURE-EMAIL-MAIL-LINK-v1.md` | Email link → Apple Mail.app na index dashboardu (ikona 📧, sloupec `mail_indexed`, sql/012) | ✅ READY-FOR-CODE → IMPLEMENTED commit 5324b74 |
+| `feature-specs/FEATURE-AI-CASCADE-v1.md` | 3-vrstvý AI cascade (rules → Llama → Claude) — spec pro session 2 (Llama threshold) + session 3 (Claude verify + topics + suggested_action + ✓ Potvrdit) | 📋 SPEC-READY (M5-pre předtažen do 2026-05-04 session, commit bc22501) |
 
 ---
 

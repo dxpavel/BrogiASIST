@@ -14,6 +14,31 @@ Popis: Handoff pro pokračování blockeru D z branch `2`.
 
 # BrogiASIST — Session Handoff (D continuation, v2.0)
 
+## ⚠️ UPDATE 2026-05-04 (večer) — M2/M3/M4 hotové + M5 spec
+
+**HOTOVO** (PROD deployed ~18:29 lokálně, branch `2`, merge commit `084992b`):
+- **M3** STATUS kolečka v dashboard email tabulce (5 stavů: novy/precteny/cekajici/zpracovany/smazany)
+- **M4** Decision Engine editor v `/pravidla` (CRUD + filter chips + drag&drop priority + inline edit)
+- **M2** 2undo TTL 1h pro 8 reverzibilních akcí (`hotovo/precteno/ceka/spam/del/of/rem/cal`) + `↶ Vrátit (1h)` button v TG po akci
+- **M5-pre** subject/body keyword condition_types v decision_rules (commit bc22501)
+- **BUG-013** (Llama confidence sanitize) + **BUG-014** (mark_read skip Trash) FIXED+DEPLOYED
+
+**Apple Bridge na 10.55.2.117** rozšířen:
+- 3 nové DELETE endpointy (`/omnifocus/task/{id}`, `/reminders/{id}`, `/calendar/{event_uid}`)
+- `/reminders/add` a `/calendar/add` vrací `id` v response (potřeba pro undo)
+
+**Migrace 016_undo_history.sql** aplikovaná na PROD (5 nových sloupců: last_action, last_action_at, last_action_payload jsonb, rem_event_id, cal_event_id + partial index).
+
+**M5 spec hotový:** `docs/feature-specs/FEATURE-AI-CASCADE-v1.md` (422 řádků, v1.1) — 3-vrstvý cascade pro 2 následující sessions.
+
+**Příští session = M5 session 2 (Llama refinement):**
+- threshold escalation logic (`CLAUDE_VERIFY_THRESHOLD` env, default 0.90)
+- Llama prompt refinement (lessons #42 + #45 + few-shot příklady)
+- subject/body Llama integration s M5-pre engine pravidly
+- Spec: sekce 3 + 8 v `FEATURE-AI-CASCADE-v1.md`
+
+---
+
 ## ⚠️ UPDATE 2026-05-04 — drift fix (krátká session)
 
 **Příznak (Pavel):** některé TG zprávy po klasifikaci mají starou per-TYP sadu tlačítek místo nové univerzální 3×3 sady (vč. suggestion buttonu z `2837dae` + H2/H3 buttons).

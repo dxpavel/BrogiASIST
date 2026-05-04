@@ -583,7 +583,7 @@ Sekce **44** v `brogiasist-lessons-learned-v1.md`.
 
 **Severita:** medium (selže klasifikace celého emailu — `continue` v outer loop, email zůstane v `status='new'`)
 **Zjištěno:** 2026-05-04 (PROD log audit po BUG-012 deploy, 13:27:35 UTC)
-**Status:** OPEN
+**Status:** **FIXED 2026-05-04 commit `b8e88a9`** — try/except + range check (0.0-1.0), fallback 0.5 + warning log. Deployed PROD 2026-05-04 ~14:51 UTC. Verifikováno: postižený email 7c5bc148 reklasifikován ÚKOL.
 
 ### Popis
 [services/ingest/classify_emails.py:331](services/ingest/classify_emails.py:331) — `confidence = float(result.get("confidence", 0.5))` bez sanitize.
@@ -631,7 +631,7 @@ Pak `classify_new_emails` proběhne v dalším 5min cyklu.
 
 **Severita:** medium (false ERROR v logu po každé `2del`/`2spam` akci na Gmail/Synology, email reálně už v Trash)
 **Zjištěno:** 2026-05-04 (PROD log audit, 13:32:23 + 13:47:00 UTC)
-**Status:** OPEN
+**Status:** **FIXED 2026-05-04 commit `e5df8a7`** — `_mark_read_after_action` skip pro Trash/Deleted/Spam/Junk folders + `mark_read` check `m.select()` návrat. Deployed PROD 2026-05-04 ~14:51 UTC.
 
 ### Popis
 Sekvence z PROD logu:

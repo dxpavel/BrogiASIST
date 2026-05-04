@@ -1,17 +1,34 @@
 ---
 Název: CONTEXT-NEW-CHAT
 Soubor: docs/CONTEXT-NEW-CHAT.md
-Verze: 7.0 (release v2 in progress, branch `2`)
-Poslední aktualizace: 2026-04-27
+Verze: 8.0 (M2/M3/M4/M5-pre deployed, M5 spec ready)
+Poslední aktualizace: 2026-05-04
 Popis: Kontext pro nový chat — stav, cesty, problémy
 ---
 
 # CONTEXT-NEW-CHAT — BrogiASIST
 
-> **POZOR:** Aktivní implementace je na **branch `2`** (release v2 — Email Semantics v1).
-> Last commit: `e37f576` (H2 threading TG flow).
-> Pro detailní handoff viz `docs/SESSION-HANDOFF-D-CONTINUATION.md` (v2.0).
+> **POZOR:** Aktivní implementace je na **branch `2`** (release v2 — Email Semantics v1 + M-features).
+> Last commit: `084992b` (Merge: M2/M3/M4/M5-pre + spec, 2026-05-04).
+> Pro detailní handoff viz `docs/SESSION-HANDOFF-D-CONTINUATION.md` (v2.0, UPDATE 2026-05-04 večer).
+> Pro M5 plán: `docs/feature-specs/FEATURE-AI-CASCADE-v1.md` (v1.1).
 > Stable bod návratu: tag `v1.1` (commit `ee483ba` na main).
+
+## Co je nově HOTOVO (2026-05-04 evening session)
+
+- **M3** STATUS kolečka v dashboard email tabulce
+- **M4** Decision Engine editor v `/pravidla` — CRUD + filter chips + drag&drop priority + inline edit
+- **M2** 2undo TTL 1h pro 8 reverzibilních akcí + ↶ Vrátit (1h) button v TG
+- **M5-pre** subject/body keyword condition_types v decision_rules (engine + UI)
+- **BUG-013** Llama confidence sanitize FIXED+DEPLOYED
+- **BUG-014** mark_read skip Trash FIXED+DEPLOYED
+- **Apple Bridge** rozšířen: 3 DELETE endpointy + ID v add response
+- **Migrace 016** aplikovaná na PROD: 5 nových sloupců v email_messages
+
+## Příští session = M5 session 2 (Llama refinement)
+
+Spec: `docs/feature-specs/FEATURE-AI-CASCADE-v1.md` sekce 3 + 8.
+Lessons relevantní: #45 (numeric sanitize), #46 (IMAP UID po MOVE), #47 (audit endpointů), #48 (spec před implementací).
 
 ---
 
