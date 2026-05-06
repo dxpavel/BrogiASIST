@@ -1,8 +1,8 @@
 ---
 Název: CONTEXT-NEW-CHAT
 Soubor: docs/CONTEXT-NEW-CHAT.md
-Verze: 8.4 (M1 final + BUG-010 FIXED + VERSION dashboard nav)
-Poslední aktualizace: 2026-05-04 (úplně poslední, ~19:50)
+Verze: 8.5 (AI no-spam strukturní fix + Apple Contacts BROGI whitelist)
+Poslední aktualizace: 2026-05-06 (po Škoda + iDoklad incidentu)
 Popis: Kontext pro nový chat — stav, cesty, problémy
 ---
 
@@ -55,6 +55,16 @@ Popis: Kontext pro nový chat — stav, cesty, problémy
 - `VERSION` soubor v repo rootu (single source of truth, „2.0")
 - Dashboard nav badge dynamicky `v{{ app_version }}` (jako BrogiMAT)
 - Bind mount → bump bez rebuildu (commit a948527, lekce #55)
+
+**2026-05-06 — AI no-spam strukturní fix:**
+- Pavlovo strukturní rozhodnutí po Škoda + iDoklad incidentu
+- AI nikdy nerozhoduje `is_spam` — Llama prompt bez `is_spam`, classify ignore
+- `_claude_verify_spam` deprecated
+- Akce + button **`📇 2contact (BROGI)`** — univerzální whitelist přes Apple Contacts
+- Apple Contacts BROGI naplněna: ŠKODA Auto/Connect, iDoklad
+- 4 false-positive spam emaily vráceny
+- VERSION bump 2.0 → **2.1**
+- Lekce #56, commits d8c0478 + 6b313ef
 
 ## Příští session = M5 session 2 (Llama refinement)
 

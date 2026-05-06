@@ -14,6 +14,64 @@ Popis: Handoff pro pokračování blockeru D z branch `2`.
 
 # BrogiASIST — Session Handoff (D continuation, v2.0)
 
+## ⚠️ UPDATE 2026-05-06 — AI no-spam strukturní fix + Apple Contacts BROGI whitelist
+
+**Trigger:** Pavel testoval 2thanks na PROD (5/5 idoklad + 5/5 krouzecka — log
+potvrzuje 2× úspěšné odeslání). Pavel se zeptal na Škoda emaily co spadly
+do spam → odhalen **systémový problém**: Claude verifikace spam podle
+"rigidních content patterns" (generický subject, podezřelá doména prefix,
+phishing markers) ničí legit komunikaci pokud AI nezná uživatelův kontext.
+
+**Pavlův insight:**
+> „Spam nemůže být podle obsahu — obsah byl vždy relevantní. Měl jsem problém
+> s autem a nedostalo se mi toho, že mám podlat podklady. Hledám univerzální
+> řešení."
+
+**Strukturní fix (commits d8c0478 + 6b313ef, v2.1):**
+
+1. **AI nikdy nerozhoduje `is_spam`**:
+   - Llama prompt: odstraněn `is_spam` field z JSON output, explicit instrukce
+     „NIKDY nerozhoduj zda je email spam"
+   - classify_emails: `is_spam = False` vždy z AI (ignore output, log info
+     pokud Llama vrátí spam=true)
+   - `_claude_verify_spam` deprecated (mrtvý kód v classify pipeline,
+     žádný auto-trash z AI)
+
+2. **Spam = JEN explicit signály**:
+   - Pavel klikne `🚫 2spam` v TG → INSERT do `classification_rules` + IMAP Trash
+   - `classification_rules` rule_type='spam' (sender memory, naučené)
+   - `decision_rules` sender exact match (manuál v `/pravidla`)
+
+3. **Univerzální whitelist přes Apple Contacts** (Pavlovo doporučení místo
+   hardcoded gov.cz/financnisprava.cz seznamu):
+   - Akce **`add_contact`** v email_actions — Bridge `/contacts/add` (group=BROGI)
+   - TG button **`📇 2contact (BROGI)`** v notify pre-row, jen pokud sender
+     NENÍ v Apple Contacts
+   - Po kliku: kontakt přidán + trigger `ingest_contacts()` → DB sync hned
+
+**Apple Contacts BROGI naplněna (manuálně přes Bridge `/contacts/add`):**
+- ŠKODA Auto (4 emaily): support@, czconnect.support@, infoline@, connect@communication.
+- ŠKODA Connect (2 emaily): no-reply@, noreply@
+- iDoklad (2 emaily + logo): info@idoklad.cz, alena@idoklad.cz
+
+**Vrácené 4 false-positive spam emaily:**
+- 3 Škoda (`402f5f66`, `7b4ae384`, `b44507d3`)
+- 1 iDoklad (`b179d926` "Novinka: Stop přepisování...")
+
+**PROD stav (po deploy):**
+- branch `2`, commit `6b313ef`, **VERSION 2.1**
+- 5 kontejnerů healthy + Apple Bridge live
+- Lekce #56 (AI nikdy nerozhoduje is_spam)
+- Architecture nová sekce „AI rozhodovací proces — strukturální safety"
+
+**Příští session:**
+- M5 session 3 (Claude verify cascade) **bude generovat JEN TYP**, NE is_spam
+  (per nový princip)
+- Pavel může postupně klikat `📇 2contact` na další oficiální sendery →
+  organic learning whitelistu
+
+---
+
 ## ⚠️ UPDATE 2026-05-04 (úplně poslední, ~19:50) — VERSION feature
 
 **Pavlův požadavek** (po M1 deploy): „přidej verzi do dashboardu, jako má
