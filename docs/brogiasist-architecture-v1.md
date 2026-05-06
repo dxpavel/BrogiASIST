@@ -533,6 +533,82 @@ docker exec brogi_scheduler python backfill_mark_read.py
 
 ---
 
+## AI rozhodovací proces — strukturální safety (2026-05-06)
+
+**Základní pravidlo (Pavlovo rozhodnutí po Škoda incidentu):**
+**AI NIKDY nerozhoduje `is_spam`.** AI je read-only klasifikátor TYPu, ne
+autorita. Pravidla a spam decision = 100 % Pavlovo (klik / WebUI / Contacts).
+
+### Decision flow per email
+
+```
+Email přijde → ingest_email.py
+       ↓
+decision_engine.evaluate_email()
+  ├── header rules (LIST, ENCRYPTED, ERROR/bounce, OOO) → end_pipeline
+  ├── self_sent (X-Brogi-Auto) → skip
+  ├── group rules (VIP / personal) → flag
+  ├── chroma_match (cosine ≤ 0.15 = ~85% similarity) → apply_remembered
+  └── ai_fallback (priority 80) → run_llama
+       ↓
+classify_emails.py
+  ├── _is_contact(sender) → in_contacts=True (whitelist)
+  ├── classification_rules (sender memory) — naučené z Pavlových kliků
+  ├── Llama klasifikace TYP (NE is_spam)
+  │     ↓
+  │   is_spam = False vždy (Llama output ignore)
+  │     ↓
+  │   uloží: typ, task_status, ai_confidence, ai_source
+  └── 2026-05-06: žádný auto-trash z AI, žádný Claude verify spam
+       ↓
+notify_emails.py → TG zpráva + buttons:
+  - in_contacts=False → pre-row [📇 2contact (BROGI)]
+  - DOKLAD/INFO/... → pre-row [✉️ 2thanks] [✏️ 2reply]
+  - POZVÁNKA → pre-row [📅✉️ 2cal+Accept]
+  - universal 3×3 (hotovo/of/rem/cal/note/unsub/skip/del/spam)
+       ↓
+Pavel klikne → email_actions.email_action()
+  ├── 2spam → mark_spam (is_spam=TRUE) + classification_rules INSERT
+  │           + IMAP Trash + Chroma store_email_action
+  ├── 2del → IMAP Trash (NE classification_rules, NE is_spam)
+  ├── 2contact → Bridge /contacts/add (group=BROGI) + ingest_contacts
+  └── ostatní → IMAP move BrogiASIST/* + DB ZPRACOVANÝ + Chroma store
+```
+
+### Spam decision — JEN explicit signály
+
+| Signál | Co dělá |
+|---|---|
+| Pavel klik **`🚫 2spam`** v TG | `is_spam=TRUE`, INSERT do `classification_rules`, IMAP Trash |
+| `classification_rules` rule_type='spam' (sender match) | classify pipeline → `is_spam=TRUE` + auto-Trash |
+| `decision_rules` sender exact match (manuální blacklist v `/pravidla`) | end_pipeline + skip |
+
+### Whitelist — Apple Contacts (univerzální)
+
+Místo hardcoded domén (gov.cz / financnisprava.cz / ...) → **Apple Contacts
+skupina BROGI** jako trusted whitelist.
+
+- `_is_contact(from_addr)` v classify_emails ověřuje v `apple_contacts.emails`
+- Pavel přidává sendery klikem **`📇 2contact (BROGI)`** v TG (pre-row
+  zobrazený pokud sender NENÍ v kontaktech)
+- Bridge `/contacts/add` JXA → Apple Contacts.app + group BROGI
+- `ingest_contacts()` triggered hned → DB sync (apple_contacts.emails + groups)
+- Příští email od stejného sendera → in_contacts=True → konzervativní flow
+
+### Plánováno (M5 session 3, ~6 h)
+
+Claude Haiku 4.5 verifikace TYPu (NE spam) s kontextem:
+- Pavlovy topics (z `topics` tabulky, `/admin` editor)
+- Pavlovy skupiny kontaktů (Apple Contacts groups)
+- Co Pavel naposled rozhodl pro podobné emaily (Chroma)
+
+Trigger: pokud Llama confidence < `CLAUDE_VERIFY_THRESHOLD` (default 0.90).
+
+**NIKDY nerozhoduje is_spam** — jen vrátí TYP, topics, suggested_action,
+suggested_task_title/due. Spam zůstává 100 % manuální.
+
+---
+
 ## Verze systému — VERSION soubor (2026-05-04)
 
 Single source of truth pro verzi systému: `VERSION` text soubor v **repo rootu**

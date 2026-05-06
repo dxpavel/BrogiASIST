@@ -571,6 +571,67 @@ def email_action(email_id: str, action: str):
         # H2 thread flow: ignoruj existující thread vazbu, založ úplně nový OF task
         # (re-use of action s upraveným task_status loggingem).
         return email_action(email_id, "of")
+    elif action == "add_contact":
+        # 2026-05-06: Pavel klikne 📇 2contact → přidá sender do Apple Contacts
+        # skupiny BROGI (trusted whitelist). Příští email od něj se klasifikuje
+        # s in_contacts=True → AI automaticky NIKDY nespustí spam logic.
+        # Plus trigger ingest_contacts() aby DB znala změnu hned.
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT from_address, subject FROM email_messages WHERE id=%s",
+            (email_id,)
+        )
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            send("⚠️ Email nenalezen.")
+            do_mark_read = False
+            return
+        from_addr, subject = row
+        # Extrahovat name + email
+        import re
+        m_full = re.match(r'^\s*"?([^"<]+?)"?\s*<([^>]+@[^>]+)>\s*$', from_addr or "")
+        if m_full:
+            name_raw = m_full.group(1).strip()
+            to_email = m_full.group(2).strip()
+        else:
+            m_email_only = re.search(r'([^\s<>]+@[^\s<>]+)', from_addr or "")
+            to_email = m_email_only.group(1).strip() if m_email_only else (from_addr or "").strip()
+            name_raw = to_email.split("@")[0] if "@" in to_email else to_email
+        if not to_email or "@" not in to_email:
+            send(f"⚠️ Nelze extrahovat email z <code>{escape_html(from_addr or '')}</code>")
+            do_mark_read = False
+            return
+        # Rozdělit name na first/last (heuristic — první slovo = first, zbytek = last)
+        name_parts = name_raw.split(" ", 1)
+        first_name = name_parts[0]
+        last_name = name_parts[1] if len(name_parts) > 1 else ""
+        # Volat Bridge /contacts/add
+        ok, resp = _bridge_call_full("/contacts/add", {
+            "first": first_name,
+            "last": last_name,
+            "organization": to_email.split("@")[1] if "@" in to_email else "",
+            "emails": [to_email],
+            "group": "BROGI",
+            "notes": f"Auto-přidáno z BrogiASIST 2026-05-06 (email subject: {(subject or '')[:80]})",
+        }, "ADD-CONTACT", str(email_id))
+        if not ok:
+            send("⚠️ Bridge /contacts/add selhalo.")
+            do_mark_read = False
+            return
+        # Trigger ingest_contacts pro DB sync (best-effort)
+        try:
+            from ingest_apple_apps import ingest_contacts
+            ingest_contacts()
+        except Exception as e:
+            log.warning(f"ingest_contacts po add_contact selhal: {e}")
+        send(
+            f"📇 <b>Kontakt přidán do BROGI</b>\n"
+            f"<code>{escape_html(to_email)}</code>\n"
+            f"<i>Příští emaily od tohoto sendera = trusted whitelist (KONTAKT).</i>"
+        )
+        do_mark_read = False
+        return
     elif action == "thanks":
         # M1 (BUG-010): pošle krátký deterministický reply odesílateli
         # ("Díky, dostal jsem to. Pavel") přes SMTP s X-Brogi-Auto headerem.
@@ -977,6 +1038,7 @@ ACTION_LABEL = {
     "thanks":    "✉️ Díky reply odeslán",
     "reply":     "✏️ Čekám na text odpovědi",
     "cal_accept":"📅✉️ Přijato + reply",
+    "add_contact":"📇 Kontakt přidán do BROGI",
     "undo":      "↶ Vráceno",
 }
 

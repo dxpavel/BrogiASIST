@@ -43,6 +43,7 @@ _ACTION_2X = {
     "thanks": "2thanks",
     "reply":  "2reply",
     "cal_accept": "2cal+Accept",
+    "add_contact": "2contact",
 }
 
 # M1: TYPy kde má smysl deterministický „Díky reply" (potvrzení přijetí).
@@ -54,6 +55,7 @@ def _buttons_for_typ(
     typ: str, email_id: str,
     has_unsubscribe: bool = False,
     suggested: dict | None = None,
+    in_contacts: bool = False,
 ) -> list:
     """Univerzální 3×3 layout pro všechny TYPy (Pavlovo rozhodnutí 2026-04-27).
 
@@ -108,6 +110,15 @@ def _buttons_for_typ(
             _btn(lbl("📅✉️ 2cal+Accept", "cal_accept"), "cal_accept", eid),
         ]] + universal
 
+    # 2026-05-06: Pokud sender NENÍ v Apple Contacts → nabídnout
+    # 📇 2contact pre-row (přidá do skupiny BROGI = trusted whitelist).
+    # Pavel rozhodne klikem; pokud je v kontaktech, button se nezobrazuje
+    # (zbytečný).
+    if not in_contacts:
+        universal = [[
+            _btn(lbl("📇 2contact (BROGI)", "add_contact"), "add_contact", eid),
+        ]] + universal
+
     # Extra řádek s návrhem (jen pokud predikce existuje a action je v universalu).
     if suggested and sug_action and sug_action in _ACTION_2X:
         pct = suggested.get("confidence_pct")
@@ -122,9 +133,9 @@ def _buttons_for_typ(
 
 
 def _render_buttons(typ: str, email_id: str, has_unsubscribe: bool = False,
-                    suggested: dict | None = None) -> list:
+                    suggested: dict | None = None, in_contacts: bool = False) -> list:
     """Backward-compat alias pro starší volání."""
-    return _buttons_for_typ(typ, email_id, has_unsubscribe, suggested)
+    return _buttons_for_typ(typ, email_id, has_unsubscribe, suggested, in_contacts=in_contacts)
 
 
 def _buttons_for_thread(email_id: str) -> list:
@@ -228,9 +239,18 @@ def notify_classified_emails():
         if suggested:
             text += f"\n<i>🔁 Z minulosti: tento vzor → {_ACTION_2X.get(suggested['action'], suggested['action'])} ({suggested['confidence_pct']}%)</i>"
 
+        # 2026-05-06: in_contacts check pro „📇 2contact" button
+        # (zobrazí se jen pokud sender NENÍ v Apple Contacts).
+        try:
+            from classify_emails import _is_contact
+            in_contacts = _is_contact(from_addr or "")
+        except Exception:
+            in_contacts = False
+
         buttons = _render_buttons(typ, str(email_id),
                                   has_unsubscribe=bool(list_unsub),
-                                  suggested=suggested)
+                                  suggested=suggested,
+                                  in_contacts=in_contacts)
         result = send(text, buttons)
 
         if result:

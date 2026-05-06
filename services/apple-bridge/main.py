@@ -865,6 +865,169 @@ JSON.stringify(result);
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/contacts/add")
+def contacts_add(body: dict):
+    """Vytvoří kontakt v Apple Contacts.app + přidá do skupiny.
+
+    Body:
+      first: str             — křestní jméno
+      last: str | None       — příjmení
+      organization: str|None — firma
+      emails: list[str]      — email adresy (label="work" default)
+      phones: list[str]|None — telefony (volitelné)
+      group: str             — skupina (vytvoří pokud neexistuje)
+      notes: str | None      — poznámka
+      image_url: str | None  — URL k logo (fetched + nastaveno jako image)
+
+    Vrací: {ok, contact_id, group, image_set}
+    """
+    import urllib.request
+    import tempfile
+
+    first = body.get("first", "") or ""
+    last = body.get("last", "") or ""
+    org = body.get("organization", "") or ""
+    emails = body.get("emails") or []
+    phones = body.get("phones") or []
+    group_name = body.get("group", "") or ""
+    notes = body.get("notes", "") or ""
+    image_url = body.get("image_url")
+
+    if not (first or last or org):
+        raise HTTPException(status_code=400, detail="Alespoň jedno z first/last/organization povinné")
+    if not group_name:
+        raise HTTPException(status_code=400, detail="group povinný")
+
+    # Stáhnout obrázek pokud URL
+    image_path = None
+    if image_url:
+        try:
+            req = urllib.request.Request(image_url, headers={"User-Agent": "BrogiASIST/2.0"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = r.read()
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tmp.write(data)
+            tmp.close()
+            image_path = tmp.name
+        except Exception as e:
+            # Image fetch fail je OK — pokračujeme bez obrázku
+            image_path = None
+
+    # JXA: vytvoř / najdi group, vytvoř person, přidej emails/phones, add to group
+    first_js = json.dumps(first)
+    last_js = json.dumps(last)
+    org_js = json.dumps(org)
+    notes_js = json.dumps(notes)
+    group_js = json.dumps(group_name)
+    emails_js = json.dumps(emails)
+    phones_js = json.dumps(phones)
+
+    script = f"""
+const Contacts = Application('Contacts');
+Contacts.includeStandardAdditions = true;
+
+// 1. Najdi nebo vytvoř group
+let group;
+try {{
+  const existing = Contacts.groups.whose({{name: {group_js}}})();
+  if (existing && existing.length > 0) {{
+    group = existing[0];
+  }} else {{
+    group = Contacts.Group({{name: {group_js}}});
+    Contacts.groups.push(group);
+  }}
+}} catch (e) {{
+  group = Contacts.Group({{name: {group_js}}});
+  Contacts.groups.push(group);
+}}
+
+// 2. Vytvoř person
+const props = {{
+  firstName: {first_js},
+  lastName: {last_js},
+  organization: {org_js},
+  note: {notes_js},
+}};
+const p = Contacts.Person(props);
+Contacts.people.push(p);
+
+// 3. Emails
+const emails = {emails_js};
+emails.forEach(e => {{
+  const em = Contacts.Email({{label: 'work', value: e}});
+  p.emails.push(em);
+}});
+
+// 4. Phones
+const phones = {phones_js};
+phones.forEach(ph => {{
+  const phone = Contacts.Phone({{label: 'work', value: ph}});
+  p.phones.push(phone);
+}});
+
+// 5. Add to group
+Contacts.add(p, {{to: group}});
+
+Contacts.save();
+
+JSON.stringify({{
+  ok: true,
+  contact_id: p.id(),
+  group: {group_js},
+  emails_added: emails.length,
+  phones_added: phones.length,
+}});
+"""
+
+    try:
+        result = run_jxa(script, timeout=30)
+    except Exception as e:
+        # Cleanup tmp image
+        if image_path:
+            try: os.unlink(image_path)
+            except OSError: pass
+        msg = str(e)
+        if "authoris" in msg.lower() or "1743" in msg or "permission" in msg.lower():
+            return JSONResponse({
+                "ok": False, "error": "no_automation_permission",
+                "message": "Bridge nemá AppleEvents permission pro Contacts (write). Allow při prvním dialogu.",
+            }, status_code=403)
+        raise HTTPException(status_code=500, detail=msg)
+
+    contact_id = (result or {}).get("contact_id") if isinstance(result, dict) else None
+
+    # 6. Image — přes AppleScript (POSIX file → JPEG/PNG)
+    image_set = False
+    if image_path and contact_id:
+        try:
+            cid_as = contact_id.replace('"', '\\"')
+            img_as = image_path.replace('"', '\\"')
+            ascript = f'''
+tell application "Contacts"
+  set thePerson to first person whose id is "{cid_as}"
+  set theData to read POSIX file "{img_as}" as JPEG picture
+  set image of thePerson to theData
+  save
+end tell
+'''
+            run_applescript(ascript, timeout=15)
+            image_set = True
+        except Exception as e:
+            image_set = False
+        finally:
+            try: os.unlink(image_path)
+            except OSError: pass
+
+    return {
+        "ok": True,
+        "contact_id": contact_id,
+        "group": group_name,
+        "emails_added": (result or {}).get("emails_added", 0),
+        "phones_added": (result or {}).get("phones_added", 0),
+        "image_set": image_set,
+    }
+
+
 ### REMOVED 2026-05-04 (L2): /contacts/all_sqlite legacy fallback ###
 # Důvod: launchd-spawned Bridge nedostával FDA (TCC limitations), endpoint
 # vždy vracel error='no_fda'. JXA primary `/contacts/all` přes Contacts.app

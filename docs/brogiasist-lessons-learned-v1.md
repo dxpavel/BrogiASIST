@@ -1554,6 +1554,61 @@ rebuild při bumpu, navíc CI/CD by ji muselo přepisovat.
 
 ---
 
+## 56. AI nikdy nerozhoduje is_spam — jen TYP (Pavlovo strukturní rozhodnutí, 2026-05-06)
+
+**Problém (Škoda incident, 2026-05-05):**
+Pavel reálně řešil problém s autem. ŠKODA Auto Support poslal email „Žádost
+o doplnění informací" z `support@skoda-auto.com`. Llama dal low confidence,
+Claude verifikoval spam s reasoningem „generický subject, neobsahuje
+specifické informace o zákazníkovi → typický phishing". Email byl označen
+**is_spam=TRUE → IMAP Trash → Pavel ho neviděl** → ztratil důležitou
+komunikaci s podporou.
+
+Pavlova logická námitka:
+> „Spam nemůže být podle obsahu — obsah byl vždy relevantní. Já mel problém
+> s autem a nedostalo se mi toho, že mám podlat podklady."
+
+**Příčina:** AI (Llama + Claude) rozhodovala o `is_spam` podle **rigidních
+content-based heuristik** (generický subject, podezřelá doména prefix,
+phishing patterns). Bez znalosti **uživatelského kontextu** (Pavel má auto
+Škoda, čeká odpověď) → false positive.
+
+**Strukturní fix (commit TBD):**
+
+`is_spam = TRUE` může nastat **JEN** z explicit signálů:
+1. **Pavel klikne `🚫 2spam`** v TG (manuální)
+2. **`classification_rules`** rule_type='spam' (naučené z Pavlových kliků)
+3. **`decision_rules`** sender exact match (manual blacklist v `/pravidla`)
+
+AI vrstva (Llama, Claude):
+- **Llama prompt: odstraněn `is_spam` field z output**, explicit instrukce
+  „NIKDY nerozhoduj zda je email spam"
+- **Llama is_spam ignore**: i když Llama zapomene a vrátí `is_spam=true`
+  v output, classify_emails.py nastaví `is_spam = False` vždy (log info)
+- **`_claude_verify_spam`**: deprecated (mrtvý kód, žádná spam větev v
+  classify pipeline)
+
+**Univerzální whitelist přes Apple Contacts** (Pavlovo doporučení):
+- Místo hardcoded gov.cz/financnisprava.cz seznamu → Apple Contacts
+  skupina BROGI = trusted senders
+- Akce **`add_contact`** + TG button **`📇 2contact`** (pre-row v notify
+  pokud sender NENÍ v kontaktech) → klik přidá sender do BROGI skupiny
+  via Bridge `/contacts/add` + trigger `ingest_contacts()` → DB sync
+- Příští email od stejného sendera → `_is_contact()` whitelist v classify
+  → spam ochrana 100 %
+
+**Pravidlo:** AI je **read-only klasifikátor**, nikoli autorita.
+- Pravidla = 100% Pavlovo (klik / WebUI / Contacts)
+- AI = navrhuje, pamatuje (Chroma vector memory), ALE nikdy nemaže email
+- Konzervativní default: pochybnost = NE spam, radši Pavel klikne ručně
+
+**Dopad na Škoda emaily:** vrácené is_spam=FALSE (commit z minulosti),
+Claude verdikty smazány z `claude_sender_verdicts`. ŠKODA Auto + ŠKODA
+Connect kontakty přidané do Apple Contacts BROGI skupiny — příští komunikace
+se Škodou bude trusted.
+
+---
+
 ## Co ještě nebylo řešeno / TODO
 
 - **iMessage ingest** — bridge endpoint naplánován, ingest skript a DB tabulka chybí

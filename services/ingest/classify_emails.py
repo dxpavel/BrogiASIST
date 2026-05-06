@@ -54,10 +54,15 @@ Vrať JSON:
   "firma": "<DXPSOLUTIONS|MBANK|ZAMECNICTVI|PRIVATE>",
   "typ": "<ÚKOL|DOKLAD|NABÍDKA|NOTIFIKACE|POZVÁNKA|INFO>",
   "task_status": "<ČEKÁ-NA-ODPOVĚĎ|null>",
-  "is_spam": <true|false>,
   "confidence": <0.0-1.0>,
   "reason": "<1 věta proč>"
 }}
+
+DŮLEŽITÉ — NIKDY nerozhoduj zda je email spam.
+Spam decision dělá uživatel manuálně. Tvoje úloha je JEN klasifikovat TYP.
+I když ti email vypadá podezřele, je to JINÝ TYP (např. NOTIFIKACE / NABÍDKA),
+ne spam. Žádné pole "is_spam" v output — bylo odstraněno (Pavlovo rozhodnutí
+2026-05-06, viz Škoda incident).
 
 Pravidla pro TYP (per spec brogiasist-semantics-v1):
 - ÚKOL: někdo na mě v obsahu čeká nebo ode mě něco očekává
@@ -327,11 +332,15 @@ def classify_new_emails(limit: int = 20):
             if not result:
                 continue
 
-            is_spam = result.get("is_spam", False)
-            # Kontakt v adresáři → nikdy spam bez ohledu na AI
-            if in_contacts and is_spam:
-                log.info(f"KONTAKT override: AI řekla spam, ignoruji ({from_addr})")
-                is_spam = False
+            # 2026-05-06: AI NIKDY nerozhoduje is_spam (Pavlovo strukturní
+            # rozhodnutí po Škoda incidentu). is_spam vždy False z Llama
+            # output. Spam = explicit Pavlovo rozhodnutí (klik 2spam) nebo
+            # classification_rules sender match (naučené z minulých kliků).
+            # Llama output 'is_spam' field (pokud Llama zapomene a vrátí ho)
+            # se ignoruje.
+            is_spam = False
+            if result.get("is_spam"):
+                log.info(f"AI is_spam=true ignorováno (Pavlovo pravidlo): {(from_addr or '')[:60]}")
             # BUG-013: Llama občas vrátí raw placeholder "<0.0-1.0>" → ValueError
             raw_confidence = result.get("confidence", 0.5)
             try:
@@ -381,41 +390,14 @@ def classify_new_emails(limit: int = 20):
             _save_classification(email_id, firma, typ, task_status, is_spam, confidence, ai_source=ai_source)
             _save_decision_flags(email_id, decision)
 
-            # 4. Spam handling
-            if is_spam:
-                short_from = _extract_email(from_addr or "")
-                # H3: no_auto_action flag (např. VIP rule) → vždy ručně, i když AI 99%
-                no_auto = bool(decision.get("no_auto_action"))
-                if confidence >= SPAM_AUTO_THRESHOLD and not no_auto:
-                    move_to_trash(email_id)
-                    tg_send(f"🗑️ <b>AUTO-SPAM</b> ({confidence:.0%})\n<code>{html_escape(short_from)}</code>\n<i>{html_escape((subject or '')[:80])}</i>")
-                    log.info(f"SPAM (auto trash, {confidence:.0%}): {subject}")
-                elif no_auto and confidence >= SPAM_AUTO_THRESHOLD:
-                    # Flag přebíjí auto-trash → nech rozhodnout Pavla přes TG
-                    send_spam_check(str(email_id), from_addr or "", subject or "")
-                    log.info(f"SPAM (no_auto_action override → TG, {confidence:.0%}): {subject}")
-                else:
-                    # Llama není jistá → zeptáme se Claude
-                    log.info(f"SPAM? Llama {confidence:.0%} → Claude verifikace: {subject[:60]}")
-                    claude = _claude_verify_spam(from_addr or "", subject or "", body)
-                    if claude is None:
-                        # Claude nedostupný → fallback na TG
-                        send_spam_check(str(email_id), from_addr or "", subject or "")
-                        log.info(f"SPAM? (Claude chyba → TG, {confidence:.0%}): {subject}")
-                    elif claude.get("is_spam"):
-                        # Claude potvrdil spam → trash
-                        _save_classification(email_id, firma, typ, task_status, True, confidence)
-                        move_to_trash(email_id)
-                        cached = " (cache)" if claude.get("cached") else ""
-                        tg_send(f"🗑️ <b>AUTO-SPAM</b> Claude potvrdil{cached}\n<code>{html_escape(short_from)}</code>\n<i>{html_escape((subject or '')[:80])}</i>")
-                        log.info(f"SPAM (Claude potvrzen → trash, Llama {confidence:.0%}): {claude.get('reason','')}")
-                    else:
-                        # Claude říká NENÍ spam → překlasifikuj a nech projít normálně
-                        _save_classification(email_id, firma, typ, task_status, False, confidence, ai_source="claude")
-                        log.info(f"SPAM zamítnut Claudem ({confidence:.0%}): {claude.get('reason','')} | {from_addr}")
+            # 4. Spam handling — DEPRECATED 2026-05-06.
+            # AI nerozhoduje is_spam, této větve už není (is_spam=False vždy).
+            # Spam = explicit Pavlovo klik 2spam (mark_spam → classification_rules)
+            # nebo decision_rules sender match (manuální blacklist v /pravidla).
+            # Žádný auto-trash z AI.
 
             # 5. Auto-přesun organizačních typů ≥85%
-            elif confidence >= 0.85 and typ in ("NOTIFIKACE", "ESHOP", "NEWSLETTER", "POTVRZENÍ", "FAKTURA"):
+            if confidence >= 0.85 and typ in ("NOTIFIKACE", "ESHOP", "NEWSLETTER", "POTVRZENÍ", "FAKTURA"):
                 subfolder = TYP_FOLDER.get(typ)
                 if subfolder:
                     move_to_brogi_folder(email_id, subfolder)
